@@ -1,0 +1,1026 @@
+/* Six Track: one-button cricket batting for the Shanling Q2 running Q2 Pod, as a card game.
+ *
+ * You bat in a floodlit stadium, seen from behind the batter. Pick a match (1, 2 or 5 overs, 10
+ * wickets) and chase the target the game sets. Centre, or a tap anywhere, swings the bat; when you
+ * swing decides everything. A strip on the pitch shows it: very early to fine leg, early to
+ * midwicket, on time straight, late to cover, very late to third man, and the closer to a band's
+ * bright centre line, the further it goes (6, 4, 2, 1). Red ends are edges; no swing, bowled.
+ * Return pauses (held, Q2 Pod closes the game). Play/Pause and the side buttons stay the music's.
+ *
+ * One file, no libraries: raw MIPS o32 syscalls, a software renderer on /dev/fb0 (320 x 375, 32 bpp,
+ * two pages; the 375 x 320 landscape view stored turned clockwise), input as text datagrams on
+ * INPUT_SOCK: "k d CODE" / "k u CODE", "t d X Y" (touch, landscape pixels), "w N" (wheel travel).
+ * The device layer (syscalls, framebuffer, input socket) follows Buddy (DiamondBond/q2-fidget, MIT).
+ * Built with -DHOST it plays a scripted session and writes BMP frames instead (preview.sh). */
+
+#define W 375
+#define H 320
+#define INPUT_SOCK "/tmp/q2-sixtrack.input.sock"
+#define KEY_RETURN 170
+#define KEY_CENTER 218
+
+typedef unsigned u32;
+#define RGB(r, g, b) (0xff000000u | ((u32)(r) << 16) | ((u32)(g) << 8) | (u32)(b))
+
+/* ---- maths: no libm ---- */
+
+#define PI 3.14159265f
+static float absf(float x) { return x < 0 ? -x : x; }
+static float minf(float a, float b) { return a < b ? a : b; }
+static float maxf(float a, float b) { return a > b ? a : b; }
+static float clampf(float x, float a, float b) { return x < a ? a : x > b ? b : x; }
+static float sat(float x) { return clampf(x, 0, 1); }
+static float mixf(float a, float b, float t) { return a + (b - a) * t; }
+static float fsqrt(float x) { return x > 0 ? __builtin_sqrtf(x) : 0; }
+static float fsin(float x) {
+    float k = x * (1 / (2 * PI));
+    x -= 2 * PI * (float)(int)(k < 0 ? k - 0.5f : k + 0.5f); /* to about -pi..pi */
+    if (x > PI) x -= 2 * PI;
+    if (x < -PI) x += 2 * PI;
+    float y = 1.2732395f * x - 0.4052847f * x * absf(x);
+    return 0.225f * (y * absf(y) - y) + y;
+}
+static float fcos(float x) { return fsin(x + PI / 2); }
+static u32 rng = 2463534242u;
+static u32 rnd(void) {
+    rng ^= rng << 13, rng ^= rng >> 17, rng ^= rng << 5;
+    return rng;
+}
+static float frand(void) { return (float)(rnd() & 0xffffff) * (1.0f / 16777216.0f); }
+
+/* ---- the camera: behind the batter, high, looking down the pitch ----
+ * A point X metres to the right, Y up, d metres down the pitch from the batting crease is drawn at
+ * x = 187.5 + X * F / (d + C), y = HOR + (CAM_H - Y) * F / (d + C). */
+
+#define CAM_F 200.0f
+#define CAM_C 6.74f
+#define HOR 76.1f
+#define CAM_H 6.532f
+#define CX 187.5f
+static float scale_at(float d) { return CAM_F / maxf(d + CAM_C, 0.5f); }
+static void proj(float X, float Y, float d, float *sx, float *sy) {
+    float s = scale_at(d);
+    *sx = CX + X * s, *sy = HOR + (CAM_H - Y) * s;
+}
+/* the ground's d under screen row y (the inverse of proj with Y 0) */
+static float ground_d(float y) { return y > HOR + 0.5f ? CAM_F * CAM_H / (y - HOR) - CAM_C : 1e6f; }
+
+/* ---- drawing on T, a W x H canvas ---- */
+
+static u32 bg[W * H], cv[W * H];
+static u32 *T = cv;
+
+static u32 mixp(u32 d, u32 s, u32 a) { /* a 0..256 */
+    u32 rb = (((d & 0xff00ffu) * (256 - a) + (s & 0xff00ffu) * a) >> 8) & 0xff00ffu;
+    u32 g = (((d & 0xff00u) * (256 - a) + (s & 0xff00u) * a) >> 8) & 0xff00u;
+    return 0xff000000u | rb | g;
+}
+static void plot(int x, int y, u32 c, float a) {
+    if ((unsigned)x >= W || (unsigned)y >= H || a <= 0.004f) return;
+    u32 *p = &T[y * W + x];
+    *p = a >= 1 ? c : mixp(*p, c, (u32)(a * 256));
+}
+static u32 shade(u32 c, float k) { /* k < 1 darker, > 1 lighter */
+    float r = (float)(c >> 16 & 255) * k, g = (float)(c >> 8 & 255) * k, b = (float)(c & 255) * k;
+    return RGB((u32)clampf(r, 0, 255), (u32)clampf(g, 0, 255), (u32)clampf(b, 0, 255));
+}
+static void add_light(int x, int y, u32 c, float a) { /* additive glow */
+    if ((unsigned)x >= W || (unsigned)y >= H || a <= 0.004f) return;
+    u32 p = T[y * W + x];
+    float r = (float)(p >> 16 & 255) + (float)(c >> 16 & 255) * a, g = (float)(p >> 8 & 255) + (float)(c >> 8 & 255) * a,
+          b = (float)(p & 255) + (float)(c & 255) * a;
+    T[y * W + x] = RGB((u32)minf(r, 255), (u32)minf(g, 255), (u32)minf(b, 255));
+}
+static void rect(int x0, int y0, int x1, int y1, u32 c, float a) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > W) x1 = W;
+    if (y1 > H) y1 = H;
+    for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x) plot(x, y, c, a);
+}
+static void bounds(float x0, float y0, float x1, float y1, int *a, int *b, int *c, int *d) {
+    *a = (int)maxf(x0, 0), *b = (int)maxf(y0, 0), *c = (int)minf(x1 + 1, W), *d = (int)minf(y1 + 1, H);
+}
+static void disc(float cx, float cy, float r, u32 c, float a) {
+    int x0, y0, x1, y1;
+    bounds(cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1, &x0, &y0, &x1, &y1);
+    for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x) {
+            float dx = (float)x + 0.5f - cx, dy = (float)y + 0.5f - cy;
+            plot(x, y, c, a * sat(r + 0.5f - fsqrt(dx * dx + dy * dy)));
+        }
+}
+static void glow(float cx, float cy, float r, u32 c, float a) {
+    int x0, y0, x1, y1;
+    bounds(cx - r, cy - r, cx + r, cy + r, &x0, &y0, &x1, &y1);
+    for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x) {
+            float dx = (float)x + 0.5f - cx, dy = (float)y + 0.5f - cy, k = 1 - (dx * dx + dy * dy) / (r * r);
+            if (k > 0) add_light(x, y, c, a * k * k);
+        }
+}
+static void ellipse(float cx, float cy, float rx, float ry, u32 c, float a) {
+    int x0, y0, x1, y1;
+    bounds(cx - rx - 1, cy - ry - 1, cx + rx + 1, cy + ry + 1, &x0, &y0, &x1, &y1);
+    float m = minf(rx, ry);
+    for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x) {
+            float dx = ((float)x + 0.5f - cx) / rx, dy = ((float)y + 0.5f - cy) / ry;
+            plot(x, y, c, a * sat((1 - fsqrt(dx * dx + dy * dy)) * m + 0.5f));
+        }
+}
+static void capsule(float x0, float y0, float x1, float y1, float r, u32 c, float a) {
+    int bx0, by0, bx1, by1;
+    bounds(minf(x0, x1) - r - 1, minf(y0, y1) - r - 1, maxf(x0, x1) + r + 1, maxf(y0, y1) + r + 1, &bx0, &by0, &bx1, &by1);
+    float vx = x1 - x0, vy = y1 - y0, vv = vx * vx + vy * vy;
+    for (int y = by0; y < by1; ++y)
+        for (int x = bx0; x < bx1; ++x) {
+            float px = (float)x + 0.5f - x0, py = (float)y + 0.5f - y0;
+            float t = vv > 0 ? sat((px * vx + py * vy) / vv) : 0, dx = px - vx * t, dy = py - vy * t;
+            plot(x, y, c, a * sat(r + 0.5f - fsqrt(dx * dx + dy * dy)));
+        }
+}
+static void rrect(int x, int y, int w, int h, float r, u32 c, float a) {
+    int bx0, by0, bx1, by1;
+    bounds((float)x, (float)y, (float)(x + w - 1), (float)(y + h - 1), &bx0, &by0, &bx1, &by1);
+    for (int py = by0; py < by1; ++py)
+        for (int px = bx0; px < bx1; ++px) {
+            float qx = maxf(maxf((float)(x + r) - ((float)px + 0.5f), ((float)px + 0.5f) - (float)(x + w - r)), 0),
+                  qy = maxf(maxf((float)(y + r) - ((float)py + 0.5f), ((float)py + 0.5f) - (float)(y + h - r)), 0);
+            plot(px, py, c, a * sat(r + 0.5f - fsqrt(qx * qx + qy * qy)));
+        }
+}
+
+/* ---- text: Liberation Sans Bold 20 px (font.h, SIL OFL 1.1), drawn at any size ---- */
+
+#include "font.h"
+static float text_w(const char *s, float k) {
+    int w = 0;
+    for (; *s; ++s)
+        if (*s >= 32 && *s < 127) w += font_adv[*s - 32];
+    return (float)w * k;
+}
+static float glyph_at(int g, int w, float gx, float gy) { /* bilinear alpha, 0..1 */
+    int x0 = (int)gx, y0 = (int)gy;
+    float fx = gx - (float)x0, fy = gy - (float)y0, v = 0;
+    const unsigned char *p = font_px + font_off[g];
+    for (int j = 0; j < 2; ++j)
+        for (int i = 0; i < 2; ++i) {
+            int x = x0 + i, y = y0 + j;
+            if (x < 0 || y < 0 || x >= w || y >= FONT_H) continue;
+            v += (float)p[y * w + x] * (i ? fx : 1 - fx) * (j ? fy : 1 - fy);
+        }
+    return v * (1 / 255.0f);
+}
+static void text(float x, float y, const char *s, float k, u32 c, float a) {
+    for (; *s; ++s) {
+        if (*s < 32 || *s > 126) continue;
+        int g = *s - 32, w = font_adv[g];
+        if (k == 1) {
+            const unsigned char *p = font_px + font_off[g];
+            for (int r = 0; r < FONT_H; ++r)
+                for (int i = 0; i < w; ++i)
+                    if (p[r * w + i]) plot((int)x + i, (int)y + r, c, a * (float)p[r * w + i] * (1 / 255.0f));
+        } else {
+            int x1 = (int)(x + (float)w * k), y1 = (int)(y + FONT_H * k);
+            for (int py = (int)y; py <= y1; ++py)
+                for (int px = (int)x; px <= x1; ++px)
+                    plot(px, py, c, a * glyph_at(g, w, ((float)px + 0.5f - x) / k - 0.5f, ((float)py + 0.5f - y) / k - 0.5f));
+        }
+        x += (float)w * k;
+    }
+}
+static void text_c(float cx, float y, const char *s, float k, u32 c, float a) { text(cx - text_w(s, k) / 2, y, s, k, c, a); }
+static void text_shadow(float cx, float y, const char *s, float k, u32 c, float a) {
+    text_c(cx + k, y + k, s, k, RGB(0, 0, 0), a * 0.6f);
+    text_c(cx, y, s, k, c, a);
+}
+static char *put(char *p, const char *s) {
+    while (*s) *p++ = *s++;
+    *p = 0;
+    return p;
+}
+static char *puti(char *p, int v) {
+    char b[12];
+    int n = 0;
+    if (v < 0) *p++ = '-', v = -v;
+    do b[n++] = (char)('0' + v % 10), v /= 10;
+    while (v);
+    while (n) *p++ = b[--n];
+    *p = 0;
+    return p;
+}
+
+/* ---- the game ---- */
+
+#define WICKETS 10
+#define STUMPS_D (-1.2f)
+#define RELEASE_D 20.0f
+#define BAT_X 0.62f
+#define STRIP_X (-0.3f) /* the strip's middle: left of the batter, under the ball's line */
+/* The strip, early to late: a red end, five bands of BAND_W, a red end. */
+#define STRIP_FAR 8.0f
+#define RED_W 0.8f
+#define BAND_W 1.4f
+#define BAND0 (STRIP_FAR - RED_W) /* the first band's far edge */
+#define STRIP_NEAR (BAND0 - 5 * BAND_W - RED_W)
+
+static const float band_ang[5] = { 135, 45, 0, -45, -135 }; /* degrees off straight, + to leg (left) */
+static const u32 band_col[5] = { RGB(176, 96, 246), RGB(64, 150, 255), RGB(64, 210, 100), RGB(252, 208, 52),
+                                 RGB(255, 140, 50) };
+static const u32 RED = RGB(236, 64, 64);
+
+enum { S_MENU, S_RUNUP, S_BALL, S_HIT, S_END, S_PAUSE };
+enum { H_NONE, H_RUNS, H_BOWLED, H_BEHIND, H_DEEP };
+
+typedef struct {
+    float hx, hd, x, d; /* home and now, metres */
+    float tx, td;       /* where it is running to */
+    int caught;
+} fielder;
+#define FIELDERS 7
+static const float field_pos[FIELDERS][2] = { { 45, 50 }, { 3, 56 }, { -45, 50 }, { 24, 27 }, { -26, 27 }, { 135, 45 }, { -135, 45 } };
+
+static const int over_opts[3] = { 1, 2, 5 };
+
+static struct {
+    int state, paused_from, sel, quit;
+    float t;       /* seconds into this state */
+    float clock;   /* seconds since start, for idle motion */
+    int overs, target, runs, wkts, balls;
+    /* this ball */
+    float v, bounce_d, six_half;
+    int slower, swung, shown;
+    float swing_t; /* when the bat swung, in state time */
+    int how, got, band, edge_side;
+    float ang, R, ymax, dur;
+    float bx, by, bd; /* the ball now: X, Y, d */
+    int catcher;
+    int won;
+    char banner[24];
+    float banner_t;
+    u32 banner_col;
+    float bail_t;
+    fielder f[FIELDERS];
+    int bg_over; /* the over the background's strip was drawn for */
+    float wheel;
+} g;
+
+static float deg(float a) { return a * (PI / 180); }
+
+/* The green band's six window narrows each over; from over 3 slower balls and other lengths mix in. */
+static int over_now(void) { return g.balls / 6; }
+static float six_half_for(int over) { return maxf(0.30f - 0.035f * (float)over, 0.14f); }
+
+static void place_fielders(void) {
+    for (int i = 0; i < FIELDERS; ++i) {
+        float a = deg(field_pos[i][0]), r = field_pos[i][1];
+        g.f[i].hx = g.f[i].x = g.f[i].tx = -fsin(a) * r;
+        g.f[i].hd = g.f[i].d = g.f[i].td = fcos(a) * r;
+        g.f[i].caught = 0;
+    }
+}
+
+static void make_bg(int over);
+
+static void new_ball(void) {
+    int over = over_now();
+    g.state = S_RUNUP, g.t = 0;
+    g.v = 8.2f + 0.9f * (float)over + frand() * 1.2f;
+    g.slower = over >= 2 && frand() < 0.25f;
+    if (g.slower) g.v *= 0.72f;
+    g.bounce_d = over >= 2 ? 6.5f + frand() * 5.5f : 8.5f + frand() * 2;
+    g.six_half = six_half_for(over);
+    g.swung = g.shown = 0, g.how = H_NONE, g.got = 0, g.catcher = -1, g.bail_t = -1;
+    g.bx = 0.3f, g.by = 2.1f, g.bd = RELEASE_D;
+    place_fielders();
+    if (g.bg_over != over) make_bg(over);
+}
+
+static void start_match(int overs) {
+    g.overs = overs, g.runs = g.wkts = g.balls = 0;
+    int balls = overs * 6;
+    g.target = balls + (int)((float)balls * (0.45f + frand() * 0.4f)) + 1; /* about 1.5 to 1.9 a ball */
+    g.banner_t = 0;
+    g.bg_over = -1;
+    new_ball();
+}
+
+/* The ball in flight from the bowler's hand at state time t: down to its bounce, up to the bat. */
+static void delivery_at(float t, float *X, float *Y, float *d) {
+    *d = RELEASE_D - g.v * t;
+    float u = (RELEASE_D - *d) / (RELEASE_D - STUMPS_D);
+    *X = mixf(0.3f, 0.02f, u);
+    if (*d > g.bounce_d) {
+        float k = (*d - g.bounce_d) / (RELEASE_D - g.bounce_d);
+        *Y = 2.1f * k * (1.25f - 0.25f * k);
+    } else {
+        float k = (g.bounce_d - *d) / (g.bounce_d - STUMPS_D);
+        *Y = 1.4f * fsin(k * PI * 0.62f);
+    }
+}
+
+static void banner(const char *s, u32 c) {
+    put(g.banner, s);
+    g.banner_t = 1.6f, g.banner_col = c;
+}
+
+/* Centre or a tap while the ball comes: the swing, judged by where the ball is now. */
+static void swing(void) {
+    if (g.state != S_BALL || g.swung) return;
+    g.swung = 1, g.swing_t = g.t;
+    float X, Y, d;
+    delivery_at(g.t, &X, &Y, &d);
+    if (d > STRIP_FAR || d < STRIP_NEAR) return; /* a miss: on to the stumps */
+    if (d > BAND0 || d < BAND0 - 5 * BAND_W) { /* an edge */
+        g.edge_side = d < BAND0 - 5 * BAND_W;
+        if (frand() < 0.5f) {
+            g.how = H_BEHIND, g.got = 0;
+            g.ang = g.edge_side ? -160 : 160, g.R = 18, g.ymax = 1.5f, g.dur = 0.55f;
+        } else {
+            g.how = H_RUNS, g.got = 1;
+            g.ang = g.edge_side ? -150 : 150, g.R = 22, g.ymax = 0.6f, g.dur = 0.8f;
+        }
+    } else {
+        int b = (int)((BAND0 - d) / BAND_W);
+        if (b > 4) b = 4;
+        float centre = BAND0 - BAND_W * ((float)b + 0.5f), off = absf(d - centre);
+        g.band = b, g.how = H_RUNS;
+        g.ang = band_ang[b] + (frand() - 0.5f) * 18;
+        if (off < g.six_half) g.got = 6, g.R = 80, g.ymax = 22, g.dur = 1.7f;
+        else if (off < 0.38f) g.got = 4, g.R = 64, g.ymax = 1.2f, g.dur = 1.35f;
+        else if (off < 0.56f) g.got = 2, g.R = 40, g.ymax = 7, g.dur = 1.15f;
+        else g.got = 1, g.R = 20, g.ymax = 2, g.dur = 0.9f;
+        float catch_p = g.got == 4 ? 0.12f : g.got == 2 ? 0.18f : 0;
+        if (frand() < catch_p) { /* to the nearest fielder: caught in the deep */
+            float best = 1e9f;
+            for (int i = 0; i < FIELDERS; ++i) {
+                float da = absf(field_pos[i][0] - g.ang);
+                if (da < best) best = da, g.catcher = i;
+            }
+            g.how = H_DEEP, g.got = 0;
+            g.R = field_pos[g.catcher][1], g.ymax = 11, g.dur = 1.4f;
+            g.ang = field_pos[g.catcher][0];
+        }
+    }
+    g.state = S_HIT, g.t = 0;
+    g.bx = BAT_X - 0.2f, g.by = 0.8f, g.bd = 0.4f;
+    if (g.how == H_RUNS && g.got != 6) { /* the nearest fielder chases it */
+        float a = deg(g.ang), lx = -fsin(a) * g.R, ld = fcos(a) * g.R, best = 1e9f;
+        int k = 0;
+        for (int i = 0; i < FIELDERS; ++i) {
+            float dx = g.f[i].hx - lx, dd = g.f[i].hd - ld, q = dx * dx + dd * dd;
+            if (q < best) best = q, k = i;
+        }
+        g.f[k].tx = lx, g.f[k].td = ld;
+    }
+}
+
+static void end_ball(void) {
+    g.balls++;
+    if (g.how == H_RUNS) g.runs += g.got;
+    else g.wkts++;
+    if (g.runs >= g.target) g.state = S_END, g.won = 1, g.t = 0;
+    else if (g.wkts >= WICKETS || g.balls >= g.overs * 6) g.state = S_END, g.won = 0, g.t = 0;
+    else new_ball();
+}
+
+static void step(float dt) {
+    g.clock += dt;
+    if (g.banner_t > 0) g.banner_t -= dt;
+    if (g.state == S_MENU || g.state == S_PAUSE) return;
+    g.t += dt;
+    if (g.state == S_END) return;
+    if (g.state == S_RUNUP) {
+        if (g.t >= 1.15f) g.state = S_BALL, g.t = 0;
+        return;
+    }
+    if (g.state == S_BALL) {
+        delivery_at(g.t, &g.bx, &g.by, &g.bd);
+        if (g.bd <= STUMPS_D) { /* bowled */
+            g.how = H_BOWLED, g.got = 0, g.bail_t = 0;
+            g.state = S_HIT, g.t = 0, g.dur = 0;
+            banner("BOWLED!", RED), g.shown = 1;
+        }
+        return;
+    }
+    /* S_HIT: the ball across the field, fielders after it */
+    if (g.bail_t >= 0) g.bail_t += dt;
+    if (g.dur > 0) {
+        float u = sat(g.t / g.dur), e = g.ymax > 3 ? u : 1 - (1 - u) * (1 - u), a = deg(g.ang);
+        float r = g.R * e;
+        g.bx = BAT_X - 0.2f - fsin(a) * r, g.bd = 0.4f + fcos(a) * r;
+        g.by = 0.8f * (1 - u) + 4 * g.ymax * u * (1 - u);
+        if (u >= 1 && g.how == H_DEEP && g.catcher >= 0) g.f[g.catcher].caught = 1;
+    }
+    for (int i = 0; i < FIELDERS; ++i) {
+        fielder *f = &g.f[i];
+        float dx = f->tx - f->x, dd = f->td - f->d, q = fsqrt(dx * dx + dd * dd), sp = 7 * dt;
+        if (q > sp) f->x += dx / q * sp, f->d += dd / q * sp;
+        else f->x = f->tx, f->d = f->td;
+    }
+    float show = g.how == H_BOWLED ? 0.1f : g.dur;
+    if (!g.shown && g.t >= show) { /* the result, once the ball arrives */
+        g.shown = 1;
+        if (g.how == H_RUNS) {
+            char s[16];
+            if (g.got == 6) banner("SIX!", RGB(255, 214, 64));
+            else if (g.got == 4) banner("FOUR!", RGB(110, 220, 255));
+            else put(puti(s, g.got), g.got == 1 ? " run" : " runs"), banner(s, RGB(255, 255, 255));
+        } else if (g.how == H_BEHIND) banner("CAUGHT BEHIND", RED);
+        else if (g.how == H_DEEP) banner("CAUGHT!", RED);
+    }
+    if (g.t >= show + 1.3f) end_ball();
+}
+
+/* ---- the stadium, drawn once (again each over, for its strip) ---- */
+
+static void make_bg(int over) {
+    T = bg;
+    u32 seed = rng;
+    rng = 99991;
+    /* sky: evening blue to navy, dithered so the panel shows no bands */
+    for (int y = 0; y < 40; ++y)
+        for (int x = 0; x < W; ++x) {
+            float k = (float)y / 40 + (frand() - 0.5f) * 0.03f;
+            bg[y * W + x] = RGB((u32)mixf(10, 34, k), (u32)mixf(16, 52, k), (u32)mixf(42, 98, k));
+        }
+    for (int i = 0; i < 30; ++i) disc(frand() * W, frand() * 24, 0.6f, RGB(255, 255, 255), 0.5f + frand() * 0.4f);
+    /* stands: three tiers of coloured seats, a speckled crowd */
+    static const u32 tier[4] = { RGB(30, 156, 160), RGB(236, 120, 40), RGB(204, 52, 140), RGB(236, 196, 48) };
+    for (int y = 34; y < 92; ++y) {
+        int row = (y - 34) / 19;
+        for (int x = 0; x < W; ++x) {
+            int seg = ((x + row * 23) / 47) & 3;
+            u32 c = shade(tier[seg], 0.55f + 0.06f * (float)row + (frand() - 0.5f) * 0.08f);
+            bg[y * W + x] = c;
+        }
+        if ((y - 34) % 19 == 0) for (int x = 0; x < W; ++x) bg[y * W + x] = RGB(20, 22, 34);
+    }
+    static const u32 crowd[6] = { RGB(250, 230, 200), RGB(210, 160, 120), RGB(120, 80, 60), RGB(255, 255, 255),
+                                 RGB(40, 90, 220), RGB(240, 60, 60) };
+    for (int i = 0; i < 2600; ++i) {
+        int x = (int)(frand() * W), y = 36 + (int)(frand() * 55);
+        if ((y - 34) % 19 == 0) continue;
+        plot(x, y, crowd[rnd() % 6], 0.85f);
+        if (frand() < 0.5f) plot(x, y + 1, crowd[rnd() % 6], 0.7f);
+    }
+    rect(0, 32, W, 35, RGB(18, 20, 30), 1); /* the roof's edge */
+    /* the boards */
+    rect(0, 91, W, 97, RGB(24, 40, 96), 1);
+    rect(0, 91, W, 92, RGB(120, 150, 220), 1);
+    /* floodlights: towers at the sides, their lamps glowing */
+    for (int s = 0; s < 2; ++s) {
+        float x = s ? 344 : 31;
+        capsule(x, 8, x + (s ? 6 : -6), 90, 1.6f, RGB(60, 64, 80), 1);
+        rrect((int)x - 17, 2, 34, 12, 3, RGB(48, 52, 66), 1);
+        for (int i = 0; i < 4; ++i) disc(x - 11 + 7.3f * (float)i, 8, 2.6f, RGB(255, 248, 220), 1);
+        glow(x, 8, 46, RGB(255, 236, 180), 0.55f);
+    }
+    /* the outfield: mowing stripes by distance, a faint grain */
+    for (int y = 97; y < H; ++y) {
+        float d = ground_d((float)y + 0.5f);
+        int stripe = ((int)((d + 400) / 6)) & 1;
+        for (int x = 0; x < W; ++x) {
+            float n = (frand() - 0.5f) * 0.06f;
+            bg[y * W + x] = shade(stripe ? RGB(70, 160, 60) : RGB(58, 142, 52), 1 + n);
+        }
+    }
+    /* the rope, 62 m round the batter */
+    for (int i = 0; i <= 720; ++i) {
+        float a = deg(-90 + 0.25f * (float)i), X = -fsin(a) * 62, d = fcos(a) * 62, sx, sy;
+        if (d < -2) continue;
+        proj(X, 0, d, &sx, &sy);
+        disc(sx, sy, maxf(0.7f, 0.06f * scale_at(d)), RGB(250, 250, 250), 0.9f);
+    }
+    /* the pitch: tan, worn at the ends */
+    for (int y = 97; y < H; ++y) {
+        float d = ground_d((float)y + 0.5f);
+        if (d > 22 || d < -3.5f) continue;
+        float s = scale_at(d), hw = 1.52f * s;
+        for (int x = (int)(CX - hw); x <= (int)(CX + hw); ++x) {
+            float edge = sat(hw + 0.5f - absf((float)x + 0.5f - CX));
+            float worn = (absf(d - 1) < 3 || absf(d - 18) < 3) ? 0.9f : 1;
+            plot(x, y, shade(RGB(204, 168, 112), worn * (1 + (frand() - 0.5f) * 0.08f)), edge);
+        }
+    }
+    /* creases: the batting crease, the bowler's */
+    for (int k = 0; k < 2; ++k) {
+        float d = k ? 18.9f : 0, x0, y0, x1, y1;
+        proj(-1.9f, 0, d, &x0, &y0), proj(1.9f, 0, d, &x1, &y1);
+        capsule(x0, y0, x1, y1, maxf(0.5f, 0.03f * scale_at(d)), RGB(250, 250, 245), 0.95f);
+    }
+    /* the strip: red ends and five coloured bands, each with its six window and bright centre */
+    float six_half = six_half_for(over);
+    for (int y = 97; y < H; ++y) {
+        float d = ground_d((float)y + 0.5f);
+        if (d > STRIP_FAR || d < STRIP_NEAR) continue;
+        float s = scale_at(d), hw = 0.5f * s, mx = CX + STRIP_X * s;
+        u32 c;
+        float a = 0.55f;
+        if (d > BAND0 || d < BAND0 - 5 * BAND_W) c = RED;
+        else {
+            int b = (int)((BAND0 - d) / BAND_W);
+            if (b > 4) b = 4;
+            float centre = BAND0 - BAND_W * ((float)b + 0.5f), off = absf(d - centre);
+            c = band_col[b];
+            if (off < six_half) c = shade(c, 1.45f), a = 0.75f;
+            if (off < 0.06f) c = RGB(255, 255, 255), a = 0.9f;
+        }
+        for (int x = (int)(mx - hw); x <= (int)(mx + hw); ++x)
+            plot(x, y, c, a * sat(hw + 0.5f - absf((float)x + 0.5f - mx)));
+    }
+    /* the bowler's stumps */
+    for (int i = -1; i <= 1; ++i) {
+        float x0, y0, x1, y1;
+        proj(0.11f * (float)i, 0, 20.12f, &x0, &y0), proj(0.11f * (float)i, 0.71f, 20.12f, &x1, &y1);
+        capsule(x0, y0, x1, y1, 0.6f, RGB(240, 230, 200), 1);
+    }
+    rng = seed;
+    T = cv;
+    g.bg_over = over;
+}
+
+/* ---- people ---- */
+
+typedef struct { u32 shirt, trim, pants, skin, cap; } kit;
+static const kit BATTING = { RGB(40, 84, 214), RGB(250, 200, 46), RGB(244, 244, 240), RGB(200, 150, 110), RGB(22, 36, 96) };
+static const kit FIELDING = { RGB(30, 150, 84), RGB(250, 250, 250), RGB(244, 244, 240), RGB(176, 124, 90), RGB(20, 90, 50) };
+static const kit UMPIRE = { RGB(250, 250, 250), RGB(40, 40, 40), RGB(40, 40, 46), RGB(210, 160, 120), RGB(20, 20, 24) };
+
+enum { P_IDLE, P_RUN, P_BOWL, P_SIX, P_FOUR, P_OUT, P_CATCH };
+
+/* A figure standing at (X, d), k pixels to the metre (boosted far away, so it reads), in a pose. */
+static void figure(float X, float d, float boost, const kit *c, int pose, float ph) {
+    float fx, fy;
+    proj(X, 0, d, &fx, &fy);
+    float k = scale_at(d) * boost;
+    float hip = fy - 0.92f * k, sh = fy - 1.42f * k, head = fy - 1.66f * k, lw = maxf(0.6f, 0.075f * k);
+    float stride = pose == P_RUN ? 0.22f * fsin(ph) : 0;
+    ellipse(fx, fy, 0.32f * k, 0.08f * k, RGB(0, 0, 0), 0.25f); /* shadow */
+    capsule(fx - 0.1f * k, hip, fx - 0.12f * k - stride * k, fy - lw, lw, c->pants, 1);
+    capsule(fx + 0.1f * k, hip, fx + 0.12f * k + stride * k, fy - lw, lw, c->pants, 1);
+    capsule(fx, hip, fx, sh, 0.2f * k, c->shirt, 1);
+    capsule(fx - 0.14f * k, sh + 0.05f * k, fx + 0.14f * k, sh + 0.05f * k, 0.06f * k, c->trim, 0.9f);
+    /* arms: shoulder to hand, per pose */
+    float al = 0.55f * k, ax0 = -0.45f, ay0 = 0.5f, ax1 = 0.45f, ay1 = 0.5f; /* hand offsets, in arm lengths */
+    if (pose == P_RUN) ax0 = -0.3f + 0.3f * fsin(ph), ay0 = 0.8f, ax1 = 0.3f - 0.3f * fsin(ph), ay1 = 0.8f;
+    else if (pose == P_BOWL) { /* the bowling arm over the top */
+        float a = ph;
+        ax1 = fsin(a), ay1 = fcos(a);
+        ax0 = -0.5f, ay0 = -0.4f;
+    } else if (pose == P_SIX) ax0 = -0.25f, ay0 = -1, ax1 = 0.25f, ay1 = -1;
+    else if (pose == P_FOUR) ax0 = -0.2f, ay0 = 0.9f, ax1 = 0.6f + 0.35f * fsin(ph * 9), ay1 = -0.1f;
+    else if (pose == P_OUT) ax0 = -0.3f, ay0 = 0.85f, ax1 = 0.15f, ay1 = -1;
+    else if (pose == P_CATCH) ax0 = -0.35f, ay0 = -0.8f, ax1 = 0.35f, ay1 = -0.8f;
+    capsule(fx - 0.2f * k, sh + 0.02f * k, fx - 0.2f * k + ax0 * al, sh + 0.02f * k + ay0 * al, lw, c->skin, 1);
+    capsule(fx + 0.2f * k, sh + 0.02f * k, fx + 0.2f * k + ax1 * al, sh + 0.02f * k + ay1 * al, lw, c->skin, 1);
+    disc(fx, head, 0.14f * k, c->skin, 1);
+    ellipse(fx, head - 0.06f * k, 0.15f * k, 0.08f * k, c->cap, 1);
+}
+
+/* The batter, from behind: big, in the foreground, the bat swinging through. */
+static void batter(void) {
+    float fx, fy;
+    proj(BAT_X, 0, 0.25f, &fx, &fy);
+    float k = scale_at(0.25f) * 1.25f;
+    float hip = fy - 0.9f * k, sh = fy - 1.42f * k, head = fy - 1.68f * k;
+    /* the bat's angle: 0 down, positive to the right; stance, backlift, swing, follow-through */
+    float phi = 0.35f, hx = 0.18f, hy = 1.0f; /* hands, metres right of the body and up */
+    if (g.state == S_BALL || g.state == S_HIT) {
+        float lift = g.state == S_BALL ? sat(g.t / 0.4f) : 1;
+        phi = mixf(0.35f, 2.3f, lift), hx = mixf(0.18f, 0.32f, lift), hy = mixf(1.0f, 1.35f, lift);
+        if (g.swung) {
+            float since = g.state == S_BALL ? g.t - g.swing_t : g.t + 0.0f, u = sat(since / 0.22f);
+            if (g.state == S_HIT && g.how == H_BOWLED) u = 0;
+            phi = mixf(2.3f, -2.5f, u), hx = mixf(0.32f, -0.3f, u), hy = mixf(1.35f, 1.4f, u * u);
+        }
+    }
+    if (g.state == S_HIT && g.swung && g.how != H_BOWLED) phi = -2.5f, hx = -0.3f, hy = 1.4f;
+    ellipse(fx, fy + 2, 0.45f * k, 0.1f * k, RGB(0, 0, 0), 0.3f);
+    /* legs in pads */
+    capsule(fx - 0.14f * k, hip, fx - 0.2f * k, fy - 3, 0.1f * k, BATTING.pants, 1);
+    capsule(fx + 0.14f * k, hip, fx + 0.2f * k, fy - 3, 0.1f * k, BATTING.pants, 1);
+    for (int s = -1; s <= 1; s += 2)
+        for (int i = 0; i < 3; ++i) {
+            float px = fx + (float)s * (0.17f * k), py = fy - (0.15f + 0.17f * (float)i) * k;
+            capsule(px - 0.07f * k, py, px + 0.07f * k, py, 0.012f * k, RGB(206, 206, 200), 0.8f);
+        }
+    rect((int)(fx - 0.3f * k), (int)(fy - 3), (int)(fx - 0.08f * k), (int)fy, RGB(30, 30, 30), 1);
+    rect((int)(fx + 0.08f * k), (int)(fy - 3), (int)(fx + 0.3f * k), (int)fy, RGB(30, 30, 30), 1);
+    /* body, back to us: shirt, a gold stripe, the number */
+    capsule(fx, hip, fx, sh, 0.23f * k, BATTING.shirt, 1);
+    capsule(fx - 0.22f * k, sh + 0.1f * k, fx + 0.22f * k, sh + 0.1f * k, 0.035f * k, BATTING.trim, 1);
+    text_c(fx, hip - 0.38f * k, "7", 0.035f * k, BATTING.trim, 0.95f);
+    /* arms to the hands, then the bat */
+    float hpx = fx + hx * k, hpy = fy - hy * k;
+    capsule(fx - 0.2f * k, sh + 0.05f * k, hpx, hpy, 0.07f * k, BATTING.shirt, 1);
+    capsule(fx + 0.2f * k, sh + 0.05f * k, hpx, hpy, 0.07f * k, BATTING.shirt, 1);
+    disc(hpx, hpy, 0.08f * k, RGB(250, 250, 250), 1); /* gloves */
+    float bl = 0.86f * k, ex = hpx + fsin(phi) * bl, ey = hpy + fcos(phi) * bl;
+    capsule(hpx, hpy, hpx + fsin(phi) * 0.25f * k, hpy + fcos(phi) * 0.25f * k, 0.03f * k, RGB(30, 30, 30), 1);
+    capsule(hpx + fsin(phi) * 0.25f * k, hpy + fcos(phi) * 0.25f * k, ex, ey, 0.055f * k, RGB(196, 150, 92), 1);
+    /* helmet */
+    disc(fx, head, 0.17f * k, BATTING.cap, 1);
+    capsule(fx - 0.14f * k, head - 0.02f * k, fx + 0.14f * k, head - 0.02f * k, 0.02f * k, BATTING.trim, 1);
+    capsule(fx, head + 0.12f * k, fx, head + 0.2f * k, 0.06f * k, BATTING.skin, 1); /* neck */
+}
+
+static void stumps(void) {
+    float t = g.bail_t;
+    for (int i = -1; i <= 1; ++i) {
+        float x0, y0, x1, y1, lean = t >= 0 ? (float)i * 0.08f + 0.1f * sat(t * 6) * (i == 0 ? 1 : (float)i) : 0;
+        proj(0.11f * (float)i, 0, STUMPS_D, &x0, &y0);
+        proj(0.11f * (float)i + lean, 0.71f, STUMPS_D + (t >= 0 ? -0.15f * sat(t * 6) : 0), &x1, &y1);
+        capsule(x0, y0, x1, y1, 0.02f * scale_at(STUMPS_D), RGB(244, 236, 210), 1);
+        capsule(x0, y0 - 3, x1, y1, 0.008f * scale_at(STUMPS_D), RGB(220, 40, 40), 0.35f);
+    }
+    for (int b = 0; b < 2; ++b) { /* bails, flying when bowled */
+        float bx = -0.055f + 0.11f * (float)b, by = 0.72f, bd = STUMPS_D, rot = 0;
+        if (t >= 0) bx += ((float)b - 0.5f) * 1.6f * t, by += 2.4f * t - 4.9f * t * t, bd -= 0.6f * t, rot = 8 * t;
+        if (by < 0) by = 0;
+        float sx, sy;
+        proj(bx, by, bd, &sx, &sy);
+        float L = 0.055f * scale_at(bd);
+        capsule(sx - fcos(rot) * L, sy - fsin(rot) * L, sx + fcos(rot) * L, sy + fsin(rot) * L, 1.4f, RGB(250, 240, 210), 1);
+    }
+}
+
+static void ball(void) {
+    if (g.state != S_BALL && g.state != S_HIT) return;
+    if (g.state == S_HIT && g.how == H_BOWLED) return;
+    if (g.bd + CAM_C < 1.2f) return; /* behind the camera: off screen */
+    float sx, sy, gx, gy;
+    proj(g.bx, g.by, g.bd, &sx, &sy);
+    proj(g.bx, 0, g.bd, &gx, &gy);
+    float r = maxf(1.6f, 0.11f * scale_at(g.bd));
+    ellipse(gx, gy, r * 1.2f, r * 0.45f, RGB(0, 0, 0), 0.3f); /* shadow */
+    if (g.state == S_BALL) { /* a short trail */
+        for (int i = 1; i <= 4; ++i) {
+            float X, Y, d, tx, ty;
+            delivery_at(g.t - 0.012f * (float)i, &X, &Y, &d);
+            proj(X, Y, d, &tx, &ty);
+            disc(tx, ty, r * (1 - 0.18f * (float)i), RGB(255, 120, 110), 0.18f);
+        }
+    }
+    disc(sx, sy, r, RGB(206, 28, 36), 1);
+    disc(sx - r * 0.3f, sy - r * 0.3f, r * 0.35f, RGB(255, 170, 160), 0.6f);
+}
+
+static void people(void) {
+    /* fielders, back to front */
+    int order[FIELDERS];
+    for (int i = 0; i < FIELDERS; ++i) order[i] = i;
+    for (int i = 0; i < FIELDERS; ++i)
+        for (int j = i + 1; j < FIELDERS; ++j)
+            if (g.f[order[j]].d > g.f[order[i]].d) {
+                int t = order[i];
+                order[i] = order[j], order[j] = t;
+            }
+    /* umpire and bowler at the far end, first */
+    int pose = P_IDLE;
+    if (g.state == S_HIT && g.t > (g.how == H_BOWLED ? 0.2f : g.dur)) {
+        if (g.how == H_RUNS) pose = g.got == 6 ? P_SIX : g.got == 4 ? P_FOUR : P_IDLE;
+        else pose = P_OUT;
+    }
+    figure(-0.8f, 22.4f, 1.5f, &UMPIRE, pose, g.clock);
+    float bd = 30, ph = 0;
+    int bpose = P_IDLE;
+    if (g.state == S_RUNUP) bd = mixf(30, RELEASE_D + 0.6f, sat(g.t / 1.15f)), bpose = P_RUN, ph = g.t * 14;
+    else if (g.state == S_BALL) bd = RELEASE_D + 0.6f - minf(g.t, 0.4f) * 3, bpose = g.t < 0.25f ? P_BOWL : P_RUN,
+                                ph = g.t < 0.25f ? PI + g.t * 12 : g.t * 10;
+    else bd = RELEASE_D - 0.6f;
+    for (int n = 0; n < FIELDERS; ++n) {
+        fielder *f = &g.f[order[n]];
+        if (f->d < bd) break;
+        int moving = absf(f->x - f->tx) + absf(f->d - f->td) > 0.05f;
+        figure(f->x, f->d, 1.7f, &FIELDING, f->caught ? P_CATCH : moving ? P_RUN : P_IDLE, g.clock * 12);
+    }
+    figure(0.55f, bd, 1.5f, &FIELDING, bpose, ph);
+    for (int n = 0; n < FIELDERS; ++n) {
+        fielder *f = &g.f[order[n]];
+        if (f->d >= bd) continue;
+        if (f->d + CAM_C < 3) continue;
+        int moving = absf(f->x - f->tx) + absf(f->d - f->td) > 0.05f;
+        figure(f->x, f->d, 1.5f, &FIELDING, f->caught ? P_CATCH : moving ? P_RUN : P_IDLE, g.clock * 12);
+    }
+}
+
+/* ---- panels ---- */
+
+static void panel(int x, int y, int w, int h) {
+    rrect(x, y, w, h, 7, RGB(10, 14, 30), 0.78f);
+}
+
+static void hud(void) {
+    char s[40], *p;
+    panel(6, 6, 128, 46);
+    p = puti(s, g.runs), p = put(p, "/"), puti(p, g.wkts);
+    text(14, 8, s, 1, RGB(255, 255, 255), 1);
+    p = put(s, "Ov "), p = puti(p, g.balls / 6), p = put(p, "."), p = puti(p, g.balls % 6), p = put(p, " of "), puti(p, g.overs);
+    text(14, 28, s, 0.75f, RGB(190, 205, 235), 1);
+    int need = g.target - g.runs, left = g.overs * 6 - g.balls;
+    panel(W - 140, 6, 134, 46);
+    p = put(s, "Target "), puti(p, g.target);
+    text((float)(W - 132), 8, s, 1, RGB(255, 214, 64), 1);
+    if (g.state != S_END) {
+        p = put(s, "Need "), p = puti(p, need > 0 ? need : 0), p = put(p, " off "), puti(p, left);
+        text((float)(W - 132), 28, s, 0.75f, RGB(190, 205, 235), 1);
+    }
+}
+
+static void result_banner(void) {
+    if (g.banner_t <= 0) return;
+    float u = 1.6f - g.banner_t, pop = u < 0.15f ? u / 0.15f : 1, a = sat(g.banner_t * 2.5f);
+    float k = (g.banner[0] == 'S' || g.banner[0] == 'F') ? 2.4f * pop : 1.6f * pop;
+    if (g.banner[0] == 'S' && g.banner[1] == 'I') /* a burst behind a six */
+        for (int i = 0; i < 14; ++i) {
+            float an = (float)i * (2 * PI / 14) + g.clock, r = 30 + 70 * u;
+            disc(CX + fcos(an) * r, 120 + fsin(an) * r * 0.6f, 4 * (1 - u * 0.5f), band_col[i % 5], a);
+        }
+    if (k > 0.05f) text_shadow(CX, 100 - FONT_H * k / 2, g.banner, k, g.banner_col, a);
+}
+
+static const char *const menu_rows[4] = { "1 Over", "2 Overs", "5 Overs", "Quit" };
+
+static void menu_screen(void) {
+    for (int i = 0; i < W * H; ++i) cv[i] = mixp(cv[i], RGB(4, 6, 16), 120);
+    text_shadow(CX, 34, "SIX TRACK", 2.2f, RGB(255, 214, 64), 1);
+    text_c(CX, 92, "Chase the target. 10 wickets.", 0.8f, RGB(200, 214, 240), 1);
+    for (int i = 0; i < 4; ++i) {
+        int y = 126 + i * 40;
+        if (i == g.sel) rrect((int)CX - 90, y - 4, 180, 34, 10, RGB(40, 84, 214), 0.95f);
+        else rrect((int)CX - 90, y - 4, 180, 34, 10, RGB(20, 26, 50), 0.7f);
+        text_c(CX, (float)y, menu_rows[i], 1, RGB(255, 255, 255), 1);
+    }
+    text_c(CX, 294, "Wheel: choose   Centre: play   Hold Return: exit", 0.62f, RGB(170, 180, 205), 1);
+}
+
+static void pause_screen(void) {
+    for (int i = 0; i < W * H; ++i) cv[i] = mixp(cv[i], RGB(4, 6, 16), 130);
+    panel((int)CX - 100, 96, 200, 130);
+    text_c(CX, 104, "Paused", 1.2f, RGB(255, 255, 255), 1);
+    static const char *const rows[2] = { "Resume", "Menu" };
+    for (int i = 0; i < 2; ++i) {
+        int y = 146 + i * 38;
+        if (i == g.sel) rrect((int)CX - 80, y - 4, 160, 32, 9, RGB(40, 84, 214), 0.95f);
+        text_c(CX, (float)y, rows[i], 1, RGB(255, 255, 255), 1);
+    }
+}
+
+static void end_screen(void) {
+    char s[48], *p;
+    float a = sat(g.t * 3);
+    for (int i = 0; i < W * H; ++i) cv[i] = mixp(cv[i], RGB(4, 6, 16), (u32)(110 * a));
+    panel((int)CX - 140, 80, 280, 150);
+    if (g.won) {
+        text_shadow(CX, 88, "YOU WON!", 1.8f, RGB(255, 214, 64), a);
+        p = put(s, "by "), p = puti(p, WICKETS - g.wkts), p = put(p, WICKETS - g.wkts == 1 ? " wicket" : " wickets");
+        int left = g.overs * 6 - g.balls;
+        p = put(p, ", "), p = puti(p, left), put(p, left == 1 ? " ball left" : " balls left");
+    } else {
+        text_shadow(CX, 88, "LOST", 1.8f, RGB(236, 90, 90), a);
+        int by = g.target - 1 - g.runs;
+        if (by <= 0) put(s, "Scores level: a tie!");
+        else p = put(s, "by "), p = puti(p, by), put(p, by == 1 ? " run" : " runs");
+    }
+    text_c(CX, 140, s, 0.9f, RGB(230, 236, 250), a);
+    p = puti(s, g.runs), p = put(p, "/"), p = puti(p, g.wkts), p = put(p, " chasing "), puti(p, g.target);
+    text_c(CX, 166, s, 0.8f, RGB(170, 186, 220), a);
+    text_c(CX, 198, "Centre: menu", 0.8f, RGB(255, 255, 255), a);
+}
+
+static void render(void) {
+    for (int i = 0; i < W * H; ++i) cv[i] = bg[i];
+    T = cv;
+    people();
+    ball();
+    batter();
+    stumps();
+    if (g.state == S_MENU) {
+        menu_screen();
+        return;
+    }
+    hud();
+    result_banner();
+    if (g.state == S_RUNUP && g.balls == 0)
+        text_shadow(CX, 230, "Centre or tap to swing", 0.8f, RGB(255, 255, 255), sat(1.2f - g.t));
+    if (g.state == S_PAUSE) pause_screen();
+    if (g.state == S_END) end_screen();
+}
+
+/* ---- input ---- */
+
+static void choose(void) {
+    if (g.state == S_MENU) {
+        if (g.sel == 3) g.quit = 1;
+        else start_match(over_opts[g.sel]);
+    } else if (g.state == S_PAUSE) {
+        if (g.sel == 0) g.state = g.paused_from;
+        else g.state = S_MENU, g.sel = 1;
+    } else if (g.state == S_END) {
+        if (g.t > 0.6f) g.state = S_MENU, g.sel = 1;
+    } else swing();
+}
+
+static int parse_int(const char **s) {
+    int v = 0, neg = 0;
+    while (**s == ' ') ++*s;
+    if (**s == '-') neg = 1, ++*s;
+    while (**s >= '0' && **s <= '9') v = v * 10 + (*(*s)++ - '0');
+    return neg ? -v : v;
+}
+
+static void input(const char *m) {
+    if (m[0] == 'k' && m[2] == 'd') {
+        const char *s = m + 3;
+        int code = parse_int(&s);
+        if (code == KEY_CENTER) choose();
+        else if (code == KEY_RETURN) {
+            if (g.state == S_RUNUP || g.state == S_BALL || g.state == S_HIT) g.paused_from = g.state, g.state = S_PAUSE, g.sel = 0;
+            else if (g.state == S_PAUSE) g.state = g.paused_from;
+        }
+    } else if (m[0] == 't' && m[2] == 'd') {
+        const char *s = m + 3;
+        int x = parse_int(&s), y = parse_int(&s);
+        (void)x;
+        if (g.state == S_MENU) {
+            for (int i = 0; i < 4; ++i)
+                if (y >= 122 + i * 40 && y < 156 + i * 40) g.sel = i, choose();
+        } else if (g.state == S_PAUSE) {
+            for (int i = 0; i < 2; ++i)
+                if (y >= 142 + i * 38 && y < 174 + i * 38) g.sel = i, choose();
+        } else choose();
+    } else if (m[0] == 'w') {
+        const char *s = m + 1;
+        g.wheel += (float)parse_int(&s);
+        int rows = g.state == S_MENU ? 4 : g.state == S_PAUSE ? 2 : 0;
+        while (g.wheel >= 40) g.wheel -= 40, g.sel = rows ? (g.sel + rows - 1) % rows : g.sel;
+        while (g.wheel <= -40) g.wheel += 40, g.sel = rows ? (g.sel + 1) % rows : g.sel;
+    }
+}
+
+static void game_init(u32 seed) {
+    rng ^= seed;
+    g.state = S_MENU, g.sel = 1;
+    g.overs = 2, g.target = 0;
+    g.bg_over = -1;
+    place_fielders();
+    make_bg(0);
+}
+
+#ifdef HOST
+/* ---- preview: a scripted session, a BMP every few frames ---- */
+#include <stdio.h>
+static void bmp(const char *path) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    unsigned char h[54] = { 'B', 'M' };
+    unsigned size = 54 + W * H * 3 + (unsigned)((4 - W * 3 % 4) % 4) * H;
+    h[2] = (unsigned char)size, h[3] = (unsigned char)(size >> 8), h[4] = (unsigned char)(size >> 16);
+    h[10] = 54, h[14] = 40, h[18] = W & 255, h[19] = W >> 8, h[22] = H & 255, h[23] = H >> 8, h[26] = 1, h[28] = 24;
+    fwrite(h, 1, 54, f);
+    for (int y = H - 1; y >= 0; --y) {
+        for (int x = 0; x < W; ++x) {
+            u32 p = cv[y * W + x];
+            unsigned char b[3] = { (unsigned char)p, (unsigned char)(p >> 8), (unsigned char)(p >> 16) };
+            fwrite(b, 1, 3, f);
+        }
+        for (int i = 0; i < (4 - W * 3 % 4) % 4; ++i) fputc(0, f);
+    }
+    fclose(f);
+}
+int main(int argc, char **argv) {
+    const char *dir = argc > 1 ? argv[1] : "/tmp/sixtrack";
+    game_init(7);
+    /* the menu, then a 2-over match; the swing aimed at a band's centre (or off it) per ball */
+    static const float aim[] = { 3.7f, 2.3f, 6.5f, 0.9f, 99, 3.95f, 5.1f, 7.6f, 2.3f, 3.7f, 0.9f, 2.3f };
+    int frame = 0, shot = 0;
+    char path[256];
+    render();
+    snprintf(path, sizeof path, "%s/menu.bmp", dir), bmp(path);
+    input("w -40"), input("w 40"); /* back to 2 Overs */
+    input("k d 218");
+    int aimed_ball = -1;
+    for (int f = 0; f < 60 * 70 && g.state != S_END; ++f) {
+        if (g.state == S_BALL && aimed_ball != g.balls) {
+            float X, Y, d;
+            delivery_at(g.t, &X, &Y, &d);
+            float want = aim[g.balls % (int)(sizeof aim / sizeof *aim)];
+            if (d <= want) swing(), aimed_ball = g.balls;
+        }
+        step(1 / 60.0f);
+        render();
+        if (f % 6 == 0) snprintf(path, sizeof path, "%s/f%04d.bmp", dir, frame++), bmp(path);
+        (void)shot;
+    }
+    step(1), render();
+    snprintf(path, sizeof path, "%s/end.bmp", dir), bmp(path);
+    printf("%d frames, %d/%d chasing %d\n", frame, g.runs, g.wkts, g.target);
+    return 0;
+}
+#else
+/* ---- the device: raw MIPS o32 syscalls (as Buddy's) ---- */
+
+long sc(long n, long a, long b, long c, long d, long e, long f);
+__asm__(".text\n.set noreorder\n.globl sc\nsc:\n"
+        "move $2, $4\nmove $4, $5\nmove $5, $6\nmove $6, $7\n"
+        "lw $7, 16($29)\nlw $8, 20($29)\nlw $9, 24($29)\n"
+        "addiu $29, $29, -32\nsw $8, 16($29)\nsw $9, 20($29)\n"
+        "syscall\naddiu $29, $29, 32\n"
+        "beqz $7, 1f\nnop\nsubu $2, $0, $2\n1: jr $31\nnop\n"
+        ".globl __start\n__start:\n"
+        "lw $4, 0($29)\naddiu $5, $29, 4\nli $8, -8\nand $29, $29, $8\naddiu $29, $29, -32\n"
+        "jal main\nnop\nmove $4, $2\nli $2, 4246\nsyscall\n1: b 1b\nnop\n.set reorder\n");
+
+#define SYS_open 4005
+#define SYS_unlink 4010
+#define SYS_ioctl 4054
+#define SYS_mmap 4090
+#define SYS_bind 4169
+#define SYS_recv 4175
+#define SYS_socket 4183
+#define SYS_poll 4188
+#define SYS_clock_gettime 4263
+#define FBIOGET_VSCREENINFO 0x4600
+#define FBIOGET_FSCREENINFO 0x4602
+#define FBIOPAN_DISPLAY 0x4606
+#define O_RDWR 2
+#define O_CLOEXEC 0x80000
+#define MSG_DONTWAIT 0x40
+
+void *memset(void *p, int v, __SIZE_TYPE__ n) {
+    volatile unsigned char *d = p;
+    while (n--) *d++ = (unsigned char)v;
+    return p;
+}
+void *memcpy(void *p, const void *s, __SIZE_TYPE__ n) {
+    volatile unsigned char *d = p;
+    const unsigned char *q = s;
+    while (n--) *d++ = *q++;
+    return p;
+}
+
+static long long now_ms(void) {
+    long ts[2];
+    sc(SYS_clock_gettime, 1, (long)ts, 0, 0, 0, 0); /* CLOCK_MONOTONIC */
+    return (long long)ts[0] * 1000 + ts[1] / 1000000;
+}
+
+int main(int argc, char **argv) {
+    (void)argc, (void)argv;
+    unsigned var[40], fix[17];
+    int fb = (int)sc(SYS_open, (long)"/dev/fb0", O_RDWR | O_CLOEXEC, 0, 0, 0, 0);
+    if (fb < 0 || sc(SYS_ioctl, fb, FBIOGET_VSCREENINFO, (long)var, 0, 0, 0) ||
+        sc(SYS_ioctl, fb, FBIOGET_FSCREENINFO, (long)fix, 0, 0, 0))
+        return 1;
+    unsigned line = fix[11] / 4, y0 = var[5], back = y0 ? 0 : W; /* demo's other page */
+    /* the Q2's panel only: 320 x 375 portrait, 32 bpp, red at 16, two pages */
+    if (var[0] != H || var[1] != W || var[3] < 2 * W || var[6] != 32 || var[8] != 16 || line < H ||
+        2 * W * line * 4 > fix[5])
+        return 1;
+    u32 *mem = (u32 *)sc(SYS_mmap, 0, (long)fix[5], 3, 1, fb, 0); /* RW, MAP_SHARED */
+    if ((long)mem < 0 && (long)mem > -4096) return 1;
+
+    struct { unsigned short family; char path[108]; } addr = { 1, INPUT_SOCK }; /* AF_UNIX */
+    int sock = (int)sc(SYS_socket, 1, 1, 0, 0, 0, 0); /* SOCK_DGRAM, MIPS numbering */
+    sc(SYS_unlink, (long)INPUT_SOCK, 0, 0, 0, 0, 0);
+    if (sock >= 0) sc(SYS_bind, sock, (long)&addr, sizeof addr, 0, 0, 0);
+
+    game_init((u32)now_ms());
+    long long last = now_ms(), next = last;
+    while (!g.quit) {
+        long long t = now_ms();
+        int wait = next > t ? (int)(next - t) : 0;
+        struct { int fd; short events, revents; } p = { sock, 1, 0 };
+        sc(SYS_poll, (long)&p, sock >= 0, wait, 0, 0, 0);
+        /* each message judged at its own moment: the game stepped up to now first */
+        char msg[64];
+        for (long n; sock >= 0 && (n = sc(SYS_recv, sock, (long)msg, sizeof msg - 1, MSG_DONTWAIT, 0, 0)) > 0;) {
+            long long now = now_ms();
+            float dt = (float)(int)(now - last) * 0.001f;
+            if (dt > 0) step(minf(dt, 0.1f)), last = now;
+            msg[n] = 0, input(msg);
+        }
+        t = now_ms();
+        if (t < next) continue;
+        step(minf((float)(int)(t - last) * 0.001f, 0.1f)), last = t;
+        render();
+        /* turned clockwise onto the portrait panel: view (x, y) is panel (H-1-y, x) */
+        u32 *page = mem + back * line;
+        for (int py = 0; py < W; ++py) {
+            u32 *row = page + py * line;
+            const u32 *src = cv + (H - 1) * W + py;
+            for (int px = 0; px < H; ++px, src -= W) row[px] = *src;
+        }
+        var[5] = back;
+        sc(SYS_ioctl, fb, FBIOPAN_DISPLAY, (long)var, 0, 0, 0);
+        back = back ? 0 : W;
+        next = t + 16;
+    }
+    if (var[5] != y0) var[5] = y0, sc(SYS_ioctl, fb, FBIOPAN_DISPLAY, (long)var, 0, 0, 0);
+    sc(SYS_unlink, (long)INPUT_SOCK, 0, 0, 0, 0, 0);
+    return 0;
+}
+#endif
