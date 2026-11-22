@@ -255,7 +255,11 @@ static struct {
     int overs, target, runs, wkts, balls;
     /* this ball */
     float v, bounce_d, six_half;
-    int slower, swung, shown;
+    int spin, kmh, swung, shown;
+    float runup;
+    /* the ball's flight: released at (X0, Y0), v down the pitch, vx across, vy0 up; ax its swing;
+     * bouncing at time tb, rising at vyb after, turned across at turn; G the game's gravity */
+    float X0, Y0, vx, vy0, ax, tb, vyb, turn, G;
     float swing_t; /* when the bat swung, in state time */
     int how, got, band, edge_side;
     float ang, R, ymax, dur;
@@ -288,16 +292,62 @@ static void place_fielders(void) {
 
 static void make_bg(int over);
 
+/* Every ball its own: pace, length, line, swing and movement off the pitch drawn at random, then
+ * flown as a projectile that bounces, so it can only be timed by watching it. The game runs in slow
+ * motion (a fast ball takes about 2 s), so gravity is scaled by the same factor squared. */
+#define GAME_G 0.62f
+
+static float spread(void) { return frand() + frand() - 1; } /* -1..1, most near 0 */
+
+static void pick_delivery(void) {
+    float p = (float)g.balls / (float)(g.overs * 6); /* how far through the match */
+    g.spin = frand() < mixf(0.06f, 0.28f, p);
+    float v, bounce_d, e, Xt = spread() * 0.2f; /* Xt: where it would cross the stumps' line */
+    g.X0 = 0.3f + spread() * 0.15f, g.Y0 = 2.1f + spread() * 0.12f, g.G = GAME_G;
+    if (g.spin) {
+        v = 5.4f + frand() * 1.6f;
+        bounce_d = 3 + frand() * 5;
+        g.ax = spread() * 0.06f, g.turn = spread() * 0.55f, e = 0.5f + frand() * 0.12f;
+        g.runup = 0.75f;
+    } else {
+        v = 9.2f + 2.4f * p + frand() * 1.6f;
+        if (frand() < 0.16f) v *= 0.7f + frand() * 0.1f; /* a slower ball */
+        bounce_d = 6 + spread() * 8; /* -2 (a full toss) to 14 (a bouncer), mostly a good length */
+        g.ax = spread() * 0.36f, g.turn = spread() * 0.12f, e = 0.36f + frand() * 0.12f;
+        g.runup = 1.0f + frand() * 0.3f;
+    }
+    g.v = v;
+    float d_ball = RELEASE_D - bounce_d;
+    g.tb = d_ball / v;
+    g.vy0 = (0.5f * g.G * g.tb * g.tb - g.Y0) / g.tb; /* to land at bounce_d */
+    g.vyb = -(g.vy0 - g.G * g.tb) * e;
+    /* aim across so swing and turn bring it to Xt at the stumps */
+    float ts = (RELEASE_D - STUMPS_D) / v;
+    if (ts <= g.tb) g.vx = (Xt - g.X0 - 0.5f * g.ax * ts * ts) / ts;
+    else g.vx = (Xt - g.X0 - 0.5f * g.ax * g.tb * g.tb - (g.ax * g.tb + g.turn) * (ts - g.tb)) / ts;
+    g.bounce_d = bounce_d;
+    g.kmh = g.spin ? (int)(70 + v * 2.6f + frand() * 3) : (int)(60 + v * 7.2f + frand() * 3);
+}
+
+/* The replay caption: pace, length and movement, said after the ball */
+static void describe(char *s) {
+    char *p = puti(s, g.kmh);
+    p = put(p, " km/h  ");
+    float b = g.bounce_d;
+    p = put(p, b < STUMPS_D ? "full toss" : b < 1.5f ? "yorker" : b < 4.5f ? "full" : b < 9 ? "good length"
+                                                                    : b < 12 ? "short" : "bouncer");
+    float side = g.spin ? g.turn : g.ax;
+    if (absf(side) > (g.spin ? 0.15f : 0.12f))
+        put(p, g.spin ? (side > 0 ? ", turning away" : ", turning in") : (side > 0 ? ", swinging away" : ", swinging in"));
+}
+
 static void new_ball(void) {
     int over = over_now();
     g.state = S_RUNUP, g.t = 0;
-    g.v = 8.2f + 0.9f * (float)over + frand() * 1.2f;
-    g.slower = over >= 2 && frand() < 0.25f;
-    if (g.slower) g.v *= 0.72f;
-    g.bounce_d = over >= 2 ? 6.5f + frand() * 5.5f : 8.5f + frand() * 2;
+    pick_delivery();
     g.six_half = six_half_for(over);
     g.swung = g.shown = 0, g.how = H_NONE, g.got = 0, g.catcher = -1, g.bail_t = -1;
-    g.bx = 0.3f, g.by = 2.1f, g.bd = RELEASE_D;
+    g.bx = g.X0, g.by = g.Y0, g.bd = RELEASE_D;
     place_fielders();
     if (g.bg_over != over) make_bg(over);
 }
@@ -311,17 +361,17 @@ static void start_match(int overs) {
     new_ball();
 }
 
-/* The ball in flight from the bowler's hand at state time t: down to its bounce, up to the bat. */
+/* The ball in flight at state time t: a projectile to its bounce, then off the pitch. */
 static void delivery_at(float t, float *X, float *Y, float *d) {
     *d = RELEASE_D - g.v * t;
-    float u = (RELEASE_D - *d) / (RELEASE_D - STUMPS_D);
-    *X = mixf(0.3f, 0.02f, u);
-    if (*d > g.bounce_d) {
-        float k = (*d - g.bounce_d) / (RELEASE_D - g.bounce_d);
-        *Y = 2.1f * k * (1.25f - 0.25f * k);
+    if (t <= g.tb) {
+        *Y = g.Y0 + g.vy0 * t - 0.5f * g.G * t * t;
+        *X = g.X0 + g.vx * t + 0.5f * g.ax * t * t;
     } else {
-        float k = (g.bounce_d - *d) / (g.bounce_d - STUMPS_D);
-        *Y = 1.4f * fsin(k * PI * 0.62f);
+        float u = t - g.tb;
+        *Y = g.vyb * u - 0.5f * g.G * u * u;
+        if (*Y < 0) *Y = -*Y * 0.4f; /* a second bounce, low */
+        *X = g.X0 + g.vx * g.tb + 0.5f * g.ax * g.tb * g.tb + (g.vx + g.ax * g.tb + g.turn) * u;
     }
 }
 
@@ -403,15 +453,17 @@ static void step(float dt) {
     g.t += dt;
     if (g.state == S_END) return;
     if (g.state == S_RUNUP) {
-        if (g.t >= 1.15f) g.state = S_BALL, g.t = 0;
+        if (g.t >= g.runup) g.state = S_BALL, g.t = 0;
         return;
     }
     if (g.state == S_BALL) {
         delivery_at(g.t, &g.bx, &g.by, &g.bd);
-        if (g.bd <= STUMPS_D) { /* bowled */
-            g.how = H_BOWLED, g.got = 0, g.bail_t = 0;
-            g.state = S_HIT, g.t = 0, g.dur = 0;
-            banner("BOWLED!", RED), g.shown = 1;
+        if (g.bd <= STUMPS_D) {
+            g.state = S_HIT, g.t = 0, g.dur = 0, g.shown = 1;
+            if (absf(g.bx) < 0.15f && g.by < 0.75f) /* on the stumps, under the bails: bowled */
+                g.how = H_BOWLED, g.got = 0, g.bail_t = 0, banner("BOWLED!", RED);
+            else /* past the off or leg stump: a dot ball */
+                g.how = H_RUNS, g.got = 0, banner(g.swung ? "Beaten!" : "Left alone", RGB(200, 210, 230));
         }
         return;
     }
@@ -718,7 +770,7 @@ static void stumps(void) {
 
 static void ball(void) {
     if (g.state != S_BALL && g.state != S_HIT) return;
-    if (g.state == S_HIT && g.how == H_BOWLED) return;
+    if (g.state == S_HIT && g.dur == 0) return; /* bowled, or past the stumps to the keeper */
     if (g.bd + CAM_C < 1.2f) return; /* behind the camera: off screen */
     float sx, sy, gx, gy;
     proj(g.bx, g.by, g.bd, &sx, &sy);
@@ -756,7 +808,7 @@ static void people(void) {
     figure(-0.8f, 22.4f, 1.5f, &UMPIRE, pose, g.clock);
     float bd = 30, ph = 0;
     int bpose = P_IDLE;
-    if (g.state == S_RUNUP) bd = mixf(30, RELEASE_D + 0.6f, sat(g.t / 1.15f)), bpose = P_RUN, ph = g.t * 14;
+    if (g.state == S_RUNUP) bd = mixf(g.runup < 1 ? 24 : 30, RELEASE_D + 0.6f, sat(g.t / g.runup)), bpose = P_RUN, ph = g.t * 14;
     else if (g.state == S_BALL) bd = RELEASE_D + 0.6f - minf(g.t, 0.4f) * 3, bpose = g.t < 0.25f ? P_BOWL : P_RUN,
                                 ph = g.t < 0.25f ? PI + g.t * 12 : g.t * 10;
     else bd = RELEASE_D - 0.6f;
@@ -792,6 +844,12 @@ static void hud(void) {
     text(CX - 118, 27, s, 0.7f, RGB(190, 205, 235), 1);
     p = put(s, "Target "), puti(p, g.target);
     text(CX + 118 - text_w(s, 0.9f), 6, s, 0.9f, RGB(255, 214, 64), 1);
+    if (g.state == S_HIT && g.t > 0.4f) { /* the speed gun, as a replay caption: after the ball */
+        describe(s);
+        float w = text_w(s, 0.62f);
+        rrect((int)(CX - w / 2 - 8), 50, (int)w + 16, 18, 6, RGB(10, 14, 30), 0.7f);
+        text_c(CX, 50, s, 0.62f, RGB(255, 255, 255), 1);
+    }
     int need = g.target - g.runs, left = g.overs * 6 - g.balls;
     if (g.state != S_END) {
         p = put(s, "Need "), p = puti(p, need > 0 ? need : 0), p = put(p, " off "), puti(p, left);
