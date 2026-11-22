@@ -220,6 +220,9 @@ static char *puti(char *p, int v) {
 #define BAT_X 0.62f
 #define STRIP_X (-0.3f) /* the strip's middle: left of the batter, under the ball's line */
 /* The strip, early to late: a red end, five bands of BAND_W, a red end. */
+#ifndef SHOW_STRIP
+#define SHOW_STRIP 0
+#endif
 #define STRIP_FAR 8.0f
 #define RED_W 0.8f
 #define BAND_W 1.4f
@@ -518,9 +521,10 @@ static void make_bg(int over) {
         proj(-1.9f, 0, d, &x0, &y0), proj(1.9f, 0, d, &x1, &y1);
         capsule(x0, y0, x1, y1, maxf(0.5f, 0.03f * scale_at(d)), RGB(250, 250, 245), 0.95f);
     }
-    /* the strip: red ends and five coloured bands, each with its six window and bright centre */
+    /* the strip (red ends, five bands, each with its six window and bright centre) is not drawn: the
+     * timing is felt, not read. SHOW_STRIP draws it, for tuning. */
     float six_half = six_half_for(over);
-    for (int y = 97; y < H; ++y) {
+    for (int y = SHOW_STRIP ? 97 : H; y < H; ++y) {
         float d = ground_d((float)y + 0.5f);
         if (d > STRIP_FAR || d < STRIP_NEAR) continue;
         float s = scale_at(d), hw = 0.5f * s, mx = CX + STRIP_X * s;
