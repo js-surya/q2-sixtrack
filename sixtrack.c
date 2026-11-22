@@ -467,6 +467,7 @@ static void make_bg(int over) {
             bg[y * W + x] = c;
         }
         if ((y - 34) % 19 == 0) for (int x = 0; x < W; ++x) bg[y * W + x] = RGB(20, 22, 34);
+        else if ((y - 34) % 4 == 0) for (int x = 0; x < W; ++x) bg[y * W + x] = shade(bg[y * W + x], 0.8f);
     }
     static const u32 crowd[6] = { RGB(250, 230, 200), RGB(210, 160, 120), RGB(120, 80, 60), RGB(255, 255, 255),
                                  RGB(40, 90, 220), RGB(240, 60, 60) };
@@ -476,10 +477,17 @@ static void make_bg(int over) {
         plot(x, y, crowd[rnd() % 6], 0.85f);
         if (frand() < 0.5f) plot(x, y + 1, crowd[rnd() % 6], 0.7f);
     }
-    rect(0, 32, W, 35, RGB(18, 20, 30), 1); /* the roof's edge */
+    for (int x = 20; x < W; x += 62) rect(x, 35, x + 3, 91, RGB(52, 54, 66), 0.9f); /* aisles */
+    rect(0, 27, W, 35, RGB(22, 24, 36), 1); /* the roof's canopy, its lights under it */
+    rect(0, 34, W, 35, RGB(70, 74, 92), 1);
+    for (int x = 8; x < W; x += 16) disc((float)x, 33, 0.9f, RGB(255, 240, 200), 0.8f);
+    /* a black sightscreen behind the bowler, as for a white ball under lights */
+    rect((int)CX - 27, 47, (int)CX + 27, 92, RGB(14, 14, 18), 1);
+    rect((int)CX - 28, 46, (int)CX + 28, 47, RGB(90, 94, 110), 1);
     /* the boards */
-    rect(0, 91, W, 97, RGB(24, 40, 96), 1);
-    rect(0, 91, W, 92, RGB(120, 150, 220), 1);
+    static const u32 led[3] = { RGB(24, 40, 96), RGB(16, 120, 128), RGB(180, 70, 30) };
+    for (int x = 0; x < W; x += 46) rect(x, 91, x + 46, 97, led[(x / 46) % 3], 1);
+    rect(0, 91, W, 92, RGB(160, 180, 230), 0.8f);
     /* floodlights: towers at the sides, their lamps glowing */
     for (int s = 0; s < 2; ++s) {
         float x = s ? 344 : 31;
@@ -492,10 +500,24 @@ static void make_bg(int over) {
     for (int y = 97; y < H; ++y) {
         float d = ground_d((float)y + 0.5f);
         int stripe = ((int)((d + 400) / 6)) & 1;
+        float s = scale_at(d);
         for (int x = 0; x < W; ++x) {
-            float n = (frand() - 0.5f) * 0.06f;
-            bg[y * W + x] = shade(stripe ? RGB(70, 160, 60) : RGB(58, 142, 52), 1 + n);
+            float n = (frand() - 0.5f) * 0.05f, X = ((float)x - CX) / s;
+            int across = ((int)((X + 400) / 9)) & 1;
+            bg[y * W + x] = shade(stripe ? RGB(70, 160, 60) : RGB(58, 142, 52), 1 + n + (across ? 0.035f : -0.035f));
         }
+    }
+    /* the floodlights' pools on the grass */
+    glow(70, 150, 190, RGB(255, 236, 190), 0.10f);
+    glow(305, 150, 190, RGB(255, 236, 190), 0.10f);
+    glow(CX, 230, 230, RGB(255, 244, 220), 0.06f);
+    /* the 30-yard circle: dashes 27.4 m round the pitch's middle */
+    for (int i = 0; i < 360; ++i) {
+        if ((i / 3) & 1) continue;
+        float a = deg((float)i), X = fsin(a) * 27.4f, d = 9.5f + fcos(a) * 27.4f, sx, sy;
+        if (d < -2) continue;
+        proj(X, 0, d, &sx, &sy);
+        disc(sx, sy, maxf(0.6f, 0.05f * scale_at(d)), RGB(245, 245, 245), 0.8f);
     }
     /* the rope, 62 m round the batter */
     for (int i = 0; i <= 720; ++i) {
@@ -511,15 +533,35 @@ static void make_bg(int over) {
         float s = scale_at(d), hw = 1.52f * s;
         for (int x = (int)(CX - hw); x <= (int)(CX + hw); ++x) {
             float edge = sat(hw + 0.5f - absf((float)x + 0.5f - CX));
-            float worn = (absf(d - 1) < 3 || absf(d - 18) < 3) ? 0.9f : 1;
-            plot(x, y, shade(RGB(204, 168, 112), worn * (1 + (frand() - 0.5f) * 0.08f)), edge);
+            float X = ((float)x + 0.5f - CX) / s;
+            float worn = (absf(d - 1) < 3 || absf(d - 18) < 3) ? 0.92f : 1, mid = absf(X) < 0.55f ? 1.06f : 1;
+            u32 c = absf(X) > 1.3f ? RGB(150, 170, 90) : RGB(204, 172, 116); /* the edges grassier */
+            plot(x, y, shade(c, worn * mid * (1 + (frand() - 0.5f) * 0.08f)), edge);
         }
     }
-    /* creases: the batting crease, the bowler's */
+    /* footmarks: the bowler's landing, the batter's guard */
+    for (int i = 0; i < 9; ++i) {
+        float X = (frand() - 0.5f) * 0.9f + 0.35f, d = 18.6f + frand() * 1.6f, sx, sy, s2 = scale_at(d);
+        proj(X, 0, d, &sx, &sy);
+        ellipse(sx, sy, 0.16f * s2, 0.05f * s2, RGB(120, 92, 60), 0.35f);
+    }
+    for (int i = 0; i < 5; ++i) {
+        float X = (frand() - 0.5f) * 0.4f + 0.1f, d = -0.5f + frand() * 0.4f, sx, sy, s2 = scale_at(d);
+        proj(X, 0, d, &sx, &sy);
+        ellipse(sx, sy, 0.1f * s2, 0.03f * s2, RGB(120, 92, 60), 0.3f);
+    }
+    /* creases at both ends: popping, bowling, and the return creases back from the popping crease */
     for (int k = 0; k < 2; ++k) {
-        float d = k ? 18.9f : 0, x0, y0, x1, y1;
-        proj(-1.9f, 0, d, &x0, &y0), proj(1.9f, 0, d, &x1, &y1);
-        capsule(x0, y0, x1, y1, maxf(0.5f, 0.03f * scale_at(d)), RGB(250, 250, 245), 0.95f);
+        float pop = k ? 18.9f : 0, bowl = k ? 20.12f : -1.22f, back = k ? 21.4f : -2.5f, x0, y0, x1, y1;
+        float w = maxf(0.5f, 0.025f * scale_at(pop));
+        proj(-1.9f, 0, pop, &x0, &y0), proj(1.9f, 0, pop, &x1, &y1);
+        capsule(x0, y0, x1, y1, w, RGB(250, 250, 245), 0.95f);
+        proj(-1.32f, 0, bowl, &x0, &y0), proj(1.32f, 0, bowl, &x1, &y1);
+        capsule(x0, y0, x1, y1, w, RGB(250, 250, 245), 0.9f);
+        for (int sgn = -1; sgn <= 1; sgn += 2) {
+            proj(1.32f * (float)sgn, 0, pop, &x0, &y0), proj(1.32f * (float)sgn, 0, back, &x1, &y1);
+            capsule(x0, y0, x1, y1, w, RGB(250, 250, 245), 0.9f);
+        }
     }
     /* the strip (red ends, five bands, each with its six window and bright centre) is not drawn: the
      * timing is felt, not read. SHOW_STRIP draws it, for tuning. */
@@ -548,6 +590,11 @@ static void make_bg(int over) {
         proj(0.11f * (float)i, 0, 20.12f, &x0, &y0), proj(0.11f * (float)i, 0.71f, 20.12f, &x1, &y1);
         capsule(x0, y0, x1, y1, 0.6f, RGB(240, 230, 200), 1);
     }
+    {
+        float x0, y0, x1, y1;
+        proj(-0.13f, 0.73f, 20.12f, &x0, &y0), proj(0.13f, 0.73f, 20.12f, &x1, &y1);
+        capsule(x0, y0, x1, y1, 0.5f, RGB(255, 245, 220), 1); /* bails */
+    }
     rng = seed;
     T = cv;
     g.bg_over = over;
@@ -569,7 +616,10 @@ static void figure(float X, float d, float boost, const kit *c, int pose, float 
     float k = scale_at(d) * boost;
     float hip = fy - 0.92f * k, sh = fy - 1.42f * k, head = fy - 1.66f * k, lw = maxf(0.6f, 0.075f * k);
     float stride = pose == P_RUN ? 0.22f * fsin(ph) : 0;
-    ellipse(fx, fy, 0.32f * k, 0.08f * k, RGB(0, 0, 0), 0.25f); /* shadow */
+    for (int i = 0; i < 4; ++i) { /* a shadow from each floodlight */
+        float sx = (i & 1 ? 1 : -1) * 0.45f * k, sy = (i & 2 ? 0.05f : -0.05f) * k;
+        ellipse(fx + sx, fy + sy, 0.5f * k, 0.07f * k, RGB(0, 0, 0), 0.12f);
+    }
     capsule(fx - 0.1f * k, hip, fx - 0.12f * k - stride * k, fy - lw, lw, c->pants, 1);
     capsule(fx + 0.1f * k, hip, fx + 0.12f * k + stride * k, fy - lw, lw, c->pants, 1);
     capsule(fx, hip, fx, sh, 0.2f * k, c->shirt, 1);
@@ -588,7 +638,10 @@ static void figure(float X, float d, float boost, const kit *c, int pose, float 
     capsule(fx - 0.2f * k, sh + 0.02f * k, fx - 0.2f * k + ax0 * al, sh + 0.02f * k + ay0 * al, lw, c->skin, 1);
     capsule(fx + 0.2f * k, sh + 0.02f * k, fx + 0.2f * k + ax1 * al, sh + 0.02f * k + ay1 * al, lw, c->skin, 1);
     disc(fx, head, 0.14f * k, c->skin, 1);
-    ellipse(fx, head - 0.06f * k, 0.15f * k, 0.08f * k, c->cap, 1);
+    if (c == &UMPIRE) { /* a wide-brimmed hat */
+        ellipse(fx, head - 0.05f * k, 0.25f * k, 0.05f * k, c->cap, 1);
+        ellipse(fx, head - 0.11f * k, 0.14f * k, 0.08f * k, c->cap, 1);
+    } else ellipse(fx, head - 0.06f * k, 0.15f * k, 0.08f * k, c->cap, 1);
 }
 
 /* The batter, from behind: big, in the foreground, the bat swinging through. */
@@ -609,7 +662,10 @@ static void batter(void) {
         }
     }
     if (g.state == S_HIT && g.swung && g.how != H_BOWLED) phi = -2.5f, hx = -0.3f, hy = 1.4f;
-    ellipse(fx, fy + 2, 0.45f * k, 0.1f * k, RGB(0, 0, 0), 0.3f);
+    for (int i = 0; i < 4; ++i) {
+        float sx = (i & 1 ? 1 : -1) * 0.5f * k, sy = (i & 2 ? 0.06f : -0.04f) * k;
+        ellipse(fx + sx, fy + 2 + sy, 0.6f * k, 0.08f * k, RGB(0, 0, 0), 0.13f);
+    }
     /* legs in pads */
     capsule(fx - 0.14f * k, hip, fx - 0.2f * k, fy - 3, 0.1f * k, BATTING.pants, 1);
     capsule(fx + 0.14f * k, hip, fx + 0.2f * k, fy - 3, 0.1f * k, BATTING.pants, 1);
@@ -636,6 +692,8 @@ static void batter(void) {
     disc(fx, head, 0.17f * k, BATTING.cap, 1);
     capsule(fx - 0.14f * k, head - 0.02f * k, fx + 0.14f * k, head - 0.02f * k, 0.02f * k, BATTING.trim, 1);
     capsule(fx, head + 0.12f * k, fx, head + 0.2f * k, 0.06f * k, BATTING.skin, 1); /* neck */
+    capsule(fx - 0.08f * k, head + 0.15f * k, fx + 0.08f * k, head + 0.15f * k, 0.035f * k, BATTING.cap, 1); /* neck guard */
+    disc(fx, head - 0.06f * k, 0.035f * k, BATTING.trim, 1); /* the helmet's badge */
 }
 
 static void stumps(void) {
@@ -672,11 +730,11 @@ static void ball(void) {
             float X, Y, d, tx, ty;
             delivery_at(g.t - 0.012f * (float)i, &X, &Y, &d);
             proj(X, Y, d, &tx, &ty);
-            disc(tx, ty, r * (1 - 0.18f * (float)i), RGB(255, 120, 110), 0.18f);
+            disc(tx, ty, r * (1 - 0.18f * (float)i), RGB(255, 255, 255), 0.15f);
         }
     }
-    disc(sx, sy, r, RGB(206, 28, 36), 1);
-    disc(sx - r * 0.3f, sy - r * 0.3f, r * 0.35f, RGB(255, 170, 160), 0.6f);
+    disc(sx, sy, r, RGB(246, 246, 240), 1);
+    capsule(sx - r * 0.7f, sy + r * 0.2f, sx + r * 0.7f, sy - r * 0.2f, maxf(0.35f, r * 0.12f), RGB(150, 150, 150), 0.8f); /* the seam */
 }
 
 static void people(void) {
