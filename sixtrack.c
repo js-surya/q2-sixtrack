@@ -227,6 +227,7 @@ static char *puti(char *p, int v) {
 #define STRIP_NEAR (BAND0 - 5 * BAND_W - RED_W)
 
 static const float band_ang[5] = { 135, 45, 0, -45, -135 }; /* degrees off straight, + to leg (left) */
+static const char *const band_name[5] = { "fine leg", "midwicket", "straight", "cover", "third man" };
 static const u32 band_col[5] = { RGB(176, 96, 246), RGB(64, 150, 255), RGB(64, 210, 100), RGB(252, 208, 52),
                                  RGB(255, 140, 50) };
 static const u32 RED = RGB(236, 64, 64);
@@ -258,7 +259,7 @@ static struct {
     float bx, by, bd; /* the ball now: X, Y, d */
     int catcher;
     int won;
-    char banner[24];
+    char banner[32];
     float banner_t;
     u32 banner_col;
     float bail_t;
@@ -322,16 +323,22 @@ static void delivery_at(float t, float *X, float *Y, float *d) {
 }
 
 static void banner(const char *s, u32 c) {
-    put(g.banner, s);
+    g.banner[0] = 0;
+    for (int i = 0; s[i] && i < (int)sizeof g.banner - 1; ++i) g.banner[i] = s[i], g.banner[i + 1] = 0;
     g.banner_t = 1.6f, g.banner_col = c;
 }
 
-/* Centre or a tap while the ball comes: the swing, judged by where the ball is now. */
+/* Centre or a tap while the ball comes: the swing, judged by the strip under the ball as it is seen.
+ * The ball flies above the pitch, so it is drawn higher than the ground it is over: the band the
+ * player sees it in is the ground under its picture, not under the ball. */
 static void swing(void) {
     if (g.state != S_BALL || g.swung) return;
     g.swung = 1, g.swing_t = g.t;
-    float X, Y, d;
+    float X, Y, d, sx, sy;
     delivery_at(g.t, &X, &Y, &d);
+    proj(X, Y, d, &sx, &sy);
+    d = ground_d(sy);
+    g.band = -1;
     if (d > STRIP_FAR || d < STRIP_NEAR) return; /* a miss: on to the stumps */
     if (d > BAND0 || d < BAND0 - 5 * BAND_W) { /* an edge */
         g.edge_side = d < BAND0 - 5 * BAND_W;
@@ -424,10 +431,10 @@ static void step(float dt) {
     if (!g.shown && g.t >= show) { /* the result, once the ball arrives */
         g.shown = 1;
         if (g.how == H_RUNS) {
-            char s[16];
-            if (g.got == 6) banner("SIX!", RGB(255, 214, 64));
-            else if (g.got == 4) banner("FOUR!", RGB(110, 220, 255));
-            else put(puti(s, g.got), g.got == 1 ? " run" : " runs"), banner(s, RGB(255, 255, 255));
+            char s[32];
+            char *q = g.got == 6 ? put(s, "SIX! ") : g.got == 4 ? put(s, "FOUR! ") : put(puti(s, g.got), g.got == 1 ? " run, " : " runs, ");
+            put(q, g.band >= 0 ? band_name[g.band] : "edge");
+            banner(s, g.got == 6 ? RGB(255, 214, 64) : g.got == 4 ? RGB(110, 220, 255) : RGB(255, 255, 255));
         } else if (g.how == H_BEHIND) banner("CAUGHT BEHIND", RED);
         else if (g.how == H_DEEP) banner("CAUGHT!", RED);
     }
@@ -714,26 +721,26 @@ static void panel(int x, int y, int w, int h) {
 }
 
 static void hud(void) {
-    char s[40], *p;
-    panel(6, 6, 128, 46);
-    p = puti(s, g.runs), p = put(p, "/"), puti(p, g.wkts);
-    text(14, 8, s, 1, RGB(255, 255, 255), 1);
-    p = put(s, "Ov "), p = puti(p, g.balls / 6), p = put(p, "."), p = puti(p, g.balls % 6), p = put(p, " of "), puti(p, g.overs);
-    text(14, 28, s, 0.75f, RGB(190, 205, 235), 1);
-    int need = g.target - g.runs, left = g.overs * 6 - g.balls;
-    panel(W - 140, 6, 134, 46);
+    /* one bar in the middle: the Q2's glass rounds its corners off */
+    char s[48], *p;
+    panel((int)CX - 128, 4, 256, 44);
+    p = puti(s, g.runs), p = put(p, "/"), p = puti(p, g.wkts);
+    text(CX - 118, 5, s, 1, RGB(255, 255, 255), 1);
+    p = put(s, "Ov "), p = puti(p, g.balls / 6), p = put(p, "."), p = puti(p, g.balls % 6), p = put(p, "/"), puti(p, g.overs);
+    text(CX - 118, 27, s, 0.7f, RGB(190, 205, 235), 1);
     p = put(s, "Target "), puti(p, g.target);
-    text((float)(W - 132), 8, s, 1, RGB(255, 214, 64), 1);
+    text(CX + 118 - text_w(s, 0.9f), 6, s, 0.9f, RGB(255, 214, 64), 1);
+    int need = g.target - g.runs, left = g.overs * 6 - g.balls;
     if (g.state != S_END) {
         p = put(s, "Need "), p = puti(p, need > 0 ? need : 0), p = put(p, " off "), puti(p, left);
-        text((float)(W - 132), 28, s, 0.75f, RGB(190, 205, 235), 1);
+        text(CX + 118 - text_w(s, 0.7f), 27, s, 0.7f, RGB(190, 205, 235), 1);
     }
 }
 
 static void result_banner(void) {
     if (g.banner_t <= 0) return;
     float u = 1.6f - g.banner_t, pop = u < 0.15f ? u / 0.15f : 1, a = sat(g.banner_t * 2.5f);
-    float k = (g.banner[0] == 'S' || g.banner[0] == 'F') ? 2.4f * pop : 1.6f * pop;
+    float k = ((g.banner[0] == 'S' && g.banner[1] == 'I') || g.banner[0] == 'F') ? 1.7f * pop : 1.3f * pop;
     if (g.banner[0] == 'S' && g.banner[1] == 'I') /* a burst behind a six */
         for (int i = 0; i < 14; ++i) {
             float an = (float)i * (2 * PI / 14) + g.clock, r = 30 + 70 * u;
