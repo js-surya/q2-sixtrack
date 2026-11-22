@@ -1,7 +1,7 @@
-# Floodlight Sixes: design
+# Six Track: design
 
 An original one-button cricket batting game for the Shanling Q2, as a Q2 Pod card game.
-Working name *Floodlight Sixes*; the owner may rename it before release.
+Named *Six Track*: a six-track EP, and sixes.
 
 ## Intent
 
@@ -37,11 +37,11 @@ score panels or look (no stick figures).
 
 ## Constraints (Q2 Pod's card games)
 
-- `q2app` with `name=` and `game=1`; the program `.cricket/q2-cricket` on the card. Q2 Pod starts it
+- `q2app` with `name=` and `game=1`; the program `.sixtrack/q2-sixtrack` on the card. Q2 Pod starts it
   from Library → Games and lists it under the App Store's Games tab.
 - It draws on `/dev/fb0` itself: 320 × 375, 32 bpp, two pages; the 375 × 320 landscape view is stored
   turned clockwise.
-- Input arrives as text datagrams on `/tmp/q2-cricket.input.sock`: `k d CODE` / `k u CODE` (Centre 218,
+- Input arrives as text datagrams on `/tmp/q2-sixtrack.input.sock`: `k d CODE` / `k u CODE` (Centre 218,
   Return 170), `t d|m|u X Y` in landscape pixels, `w N` wheel travel.
 - Holding Return quits (Q2 Pod TERMs the game); 2 minutes without input closes it.
 - No libraries on the Q2: raw MIPS o32 syscalls, software rendering, built with `clang` + `ld.lld`
@@ -101,7 +101,7 @@ Return during play opens Pause: Continue, Restart, Quit. Game over: score, best,
 Menu colours from Q2 Pod's theme pop-up colours, as Buddy does.
 
 **Saving.** Best Endless score and best Chase level in a small file in the game's card folder
-(`.cricket/save`), written whole (temp file, then rename).
+(`.sixtrack/save`), written whole (temp file, then rename).
 
 ## Look (full colour, our own cartoon style)
 
@@ -139,6 +139,6 @@ Menu colours from Q2 Pod's theme pop-up colours, as Buddy does.
 
 ## Release
 
-- Repo `js-surya/q2-cricket`, MIT, credits Buddy (MIT) for the Q2 layer.
-- Release zip `q2-cricket-vX.Y-<sha>.zip` holding `.cricket/q2app` and `.cricket/q2-cricket`; then
+- Repo `js-surya/q2-sixtrack`, MIT, credits Buddy (MIT) for the Q2 layer.
+- Release zip `q2-sixtrack-vX.Y-<sha>.zip` holding `.sixtrack/q2app` and `.sixtrack/q2-sixtrack`; then
   ask Bond to add it to `sources.list` under `[Games]`.
