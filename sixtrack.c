@@ -243,8 +243,8 @@ typedef struct {
     float tx, td;       /* where it is running to */
     int caught;
 } fielder;
-#define FIELDERS 7
-static const float field_pos[FIELDERS][2] = { { 45, 50 }, { 3, 56 }, { -45, 50 }, { 24, 27 }, { -26, 27 }, { 135, 45 }, { -135, 45 } };
+#define FIELDERS 9
+#define RUN_SPEED 6.5f /* a fielder's sprint, game metres a second, before their own pace */
 
 static const int over_opts[3] = { 1, 2, 5 };
 
@@ -267,7 +267,7 @@ static struct {
     float bx, by, bd; /* the ball now: X, Y, d */
     int catcher;
     int won;
-    char banner[32];
+    char banner[48];
     float banner_t;
     u32 banner_col;
     float bail_t;
@@ -280,6 +280,10 @@ static struct {
     int stand, best_stand, best_a, best_b;
     /* the bowling: the attack's level for the match, and this over's bowler */
     float attack, skill;
+    /* the field: each fielder's place for this over (degrees off straight for a right-hander, metres
+     * out), their pace and their hands, for the match */
+    float fpos[FIELDERS][2], fpace[FIELDERS], fhands[FIELDERS];
+    int dropped, saved;
     int btype, bnum; /* 0 fast, 1 medium, 2 spin; the shirt number */
     float wheel;
 } g;
@@ -306,9 +310,27 @@ static void pick_lineup(void) {
 static int over_now(void) { return g.balls / 6; }
 static float six_half_for(int over) { return maxf(0.30f - 0.035f * (float)over, 0.14f); }
 
+/* The captain's field for an over: three to five on the boundary, the rest in the ring, spread round
+ * the ground, none straight behind (the keeper's) and none on top of another. */
+static void set_field(void) {
+    int deep = 3 + (int)(rnd() % 3);
+    for (int i = 0; i < FIELDERS; ++i) {
+        float a, r = i < deep ? 46 + frand() * 12 : 20 + frand() * 10;
+        int ok, tries = 0;
+        do {
+            a = -165 + frand() * 330, ok = 1;
+            for (int j = 0; j < i; ++j) {
+                float da = absf(a - g.fpos[j][0]), dr = absf(r - g.fpos[j][1]);
+                if (da < (dr < 15 ? 26 : 10)) ok = 0;
+            }
+        } while (!ok && ++tries < 40);
+        g.fpos[i][0] = a, g.fpos[i][1] = r;
+    }
+}
+
 static void place_fielders(void) {
     for (int i = 0; i < FIELDERS; ++i) {
-        float a = deg(field_pos[i][0] * hand()), r = field_pos[i][1]; /* the field mirrored for a left-hander */
+        float a = deg(g.fpos[i][0] * hand()), r = g.fpos[i][1]; /* the field mirrored for a left-hander */
         g.f[i].hx = g.f[i].x = g.f[i].tx = -fsin(a) * r;
         g.f[i].hd = g.f[i].d = g.f[i].td = fcos(a) * r;
         g.f[i].caught = 0;
@@ -373,8 +395,10 @@ static void new_ball(void) {
     int over = over_now();
     g.state = S_RUNUP, g.t = 0;
     pick_delivery();
-    if (g.balls % 6 == 0) { /* a new over: a new bowler, fast, medium or spin, sharper or not */
+    if (g.balls % 6 == 0) { /* a new over: a new bowler, fast, medium or spin, sharper or not, and a new field */
         int last = g.bnum;
+        set_field();
+        place_fielders();
         g.btype = frand() < 0.45f ? 0 : frand() < 0.55f ? 1 : 2;
         g.skill = clampf(g.attack * (0.85f + frand() * 0.3f), 0.6f, 1.5f);
         do g.bnum = 1 + (int)(rnd() % 99);
@@ -398,6 +422,8 @@ static void start_match(int overs) {
     g.overs = overs, g.runs = g.wkts = g.balls = 0;
     pick_lineup();
     g.attack = 0.75f + frand() * 0.55f, g.bnum = 0; /* the match's attack: gentle to fiery */
+    for (int i = 0; i < FIELDERS; ++i) g.fpace[i] = 0.8f + frand() * 0.4f, g.fhands[i] = 0.72f + frand() * 0.26f;
+    set_field();
     /* the target: anything from 6 to 15 an over, a little lower against a fiery attack */
     float rpo = (6 + frand() * 9) * mixf(1.08f, 0.92f, (g.attack - 0.75f) / 0.55f);
     g.target = (int)((float)overs * rpo + 0.5f) + 1;
@@ -433,6 +459,49 @@ static void banner(const char *s, u32 c) {
     g.banner_t = 1.6f, g.banner_col = c;
 }
 
+/* Where the shot goes and who gets to it. A lofted ball lands at `land` metres: a fielder who can
+ * run there in its flight time may catch it, surer the shorter their run and the better their hands,
+ * or drop it. A ball along the ground is cut off by a fielder who reaches its line before it passes:
+ * a four stopped is one or two. A six clears the rope. */
+static void field_the_shot(void) {
+    g.dropped = g.saved = 0;
+    if (g.got == 6) return;
+    int lofted = g.got == 2 || (g.got == 4 && frand() < 0.45f) || (g.got == 1 && frand() < 0.3f);
+    float a = deg(g.ang), ox = (BAT_X - 0.2f) * hand(), dx = -fsin(a), dd = fcos(a);
+    if (lofted) {
+        float land = g.got == 4 ? 46 + frand() * 10 : g.got == 2 ? 28 + frand() * 10 : 14 + frand() * 6;
+        float T = g.got == 4 ? 1.5f : g.got == 2 ? 1.3f : 1.0f; /* its flight time */
+        float lx = ox + dx * land, ld = 0.4f + dd * land, best = 1e9f;
+        int k = -1;
+        for (int i = 0; i < FIELDERS; ++i) {
+            float fx = g.f[i].hx - lx, fd = g.f[i].hd - ld, dist = fsqrt(fx * fx + fd * fd),
+                  reach = g.fpace[i] * RUN_SPEED * T + 1.5f;
+            if (dist <= reach && dist / reach < best) best = dist / reach, k = i;
+        }
+        if (k < 0) return; /* in a gap */
+        g.f[k].tx = lx, g.f[k].td = ld;
+        float p = g.fhands[k] * (1 - 0.4f * best) * clampf(g.skill, 0.8f, 1.2f);
+        if (frand() < p) { /* caught */
+            g.how = H_DEEP, g.got = 0, g.catcher = k;
+            g.R = land, g.ymax = maxf(g.ymax, 8), g.dur = T;
+        } else g.dropped = 1, g.R = land, g.ymax = maxf(g.ymax, 8), g.dur = T; /* dropped: the runs stand */
+        return;
+    }
+    /* along the ground: the first fielder who reaches its line in time */
+    float best_s = g.R;
+    int k = -1;
+    for (int i = 0; i < FIELDERS; ++i) {
+        float fx = g.f[i].hx - ox, fd = g.f[i].hd - 0.4f, along = fx * dx + fd * dd;
+        if (along < 3 || along > g.R) continue;
+        float across = absf(fx * dd - fd * dx), t_ball = g.dur * (along / g.R), t_run = across / (g.fpace[i] * RUN_SPEED);
+        if (t_run <= t_ball + 0.15f && along < best_s) best_s = along, k = i;
+    }
+    if (k < 0) return;
+    g.f[k].tx = ox + dx * best_s, g.f[k].td = 0.4f + dd * best_s;
+    if (g.got == 4) g.got = best_s > 38 ? 2 : 1, g.saved = 1;
+    g.dur *= best_s / g.R, g.R = best_s;
+}
+
 /* Centre or a tap while the ball comes: the swing, judged by the strip under the ball as it is seen.
  * The ball flies above the pitch, so it is drawn higher than the ground it is over: the band the
  * player sees it in is the ground under its picture, not under the ball. */
@@ -464,22 +533,12 @@ static void swing(void) {
         else if (off < 0.38f) g.got = 4, g.R = 64, g.ymax = 1.2f, g.dur = 1.35f;
         else if (off < 0.56f) g.got = 2, g.R = 40, g.ymax = 7, g.dur = 1.15f;
         else g.got = 1, g.R = 20, g.ymax = 2, g.dur = 0.9f;
-        float catch_p = (g.got == 4 ? 0.12f : g.got == 2 ? 0.18f : 0) * g.skill;
-        if (frand() < catch_p) { /* to the nearest fielder: caught in the deep */
-            float best = 1e9f;
-            for (int i = 0; i < FIELDERS; ++i) {
-                float da = absf(field_pos[i][0] * hand() - g.ang);
-                if (da < best) best = da, g.catcher = i;
-            }
-            g.how = H_DEEP, g.got = 0;
-            g.R = field_pos[g.catcher][1], g.ymax = 11, g.dur = 1.4f;
-            g.ang = field_pos[g.catcher][0] * hand();
-        }
+        field_the_shot();
     }
     g.state = S_HIT, g.t = 0;
     g.bx = (BAT_X - 0.2f) * hand(), g.by = 0.8f, g.bd = 0.4f;
-    if (g.how == H_RUNS && g.got != 6) { /* the nearest fielder chases it */
-        float a = deg(g.ang), lx = -fsin(a) * g.R, ld = fcos(a) * g.R, best = 1e9f;
+    if (g.how == H_RUNS && g.got != 6 && !g.dropped && !g.saved) { /* the nearest fielder chases it */
+        float a = deg(g.ang), lx = (BAT_X - 0.2f) * hand() - fsin(a) * g.R, ld = 0.4f + fcos(a) * g.R, best = 1e9f;
         int k = 0;
         for (int i = 0; i < FIELDERS; ++i) {
             float dx = g.f[i].hx - lx, dd = g.f[i].hd - ld, q = dx * dx + dd * dd;
@@ -571,8 +630,9 @@ static void step(float dt) {
     if (!g.shown && g.t >= show) { /* the result, once the ball arrives */
         g.shown = 1;
         if (g.how == H_RUNS) {
-            char s[32];
-            char *q = g.got == 6 ? put(s, "SIX! ") : g.got == 4 ? put(s, "FOUR! ") : put(puti(s, g.got), g.got == 1 ? " run, " : " runs, ");
+            char s[48];
+            char *q = g.dropped ? put(s, "Dropped! ") : g.saved ? put(s, "Saved! ") : s;
+            q = g.got == 6 ? put(q, "SIX! ") : g.got == 4 ? put(q, "FOUR! ") : put(puti(q, g.got), g.got == 1 ? " run, " : " runs, ");
             put(q, g.band >= 0 ? band_name[g.band] : "edge");
             banner(s, g.got == 6 ? RGB(255, 214, 64) : g.got == 4 ? RGB(110, 220, 255) : RGB(255, 255, 255));
         } else if (g.how == H_BEHIND) banner("CAUGHT BEHIND", RED);
