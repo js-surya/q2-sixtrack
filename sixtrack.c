@@ -462,7 +462,7 @@ static void start_match(int overs) {
     for (int i = 0; i < FIELDERS; ++i) g.fpace[i] = 0.8f + frand() * 0.4f, g.fhands[i] = 0.72f + frand() * 0.26f;
     set_field();
     /* the target: anything from 6 to 15 an over, a little lower against a fiery attack */
-    float rpo = (6 + frand() * 9) * mixf(1.08f, 0.92f, (g.attack - 0.75f) / 0.55f);
+    float rpo = (6 + frand() * 8) * mixf(1.08f, 0.92f, (g.attack - 0.75f) / 0.55f);
     g.target = (int)((float)overs * rpo + 0.5f) + 1;
     for (int i = 0; i <= WICKETS; ++i) g.card[i].runs = g.card[i].balls = g.card[i].fours = g.card[i].sixes = g.card[i].out = 0;
     g.striker = 0, g.other = 1, g.next_in = 2, g.page = 0;
@@ -553,10 +553,10 @@ static void swing(void) {
     /* How far from the perfect moment (ms, + late): that decides the shot's quality, and early or late
      * steers it, leg side or off side. A sharper bowler leaves less time. */
     float e = (g.d_ideal - d) / g.v * 1000, ae = absf(e) * clampf(g.skill, 0.75f, 1.35f);
-    if (ae > 85) return; /* beaten: on to the stumps */
-    if (ae > 55) { /* an edge */
+    if (ae > 100) return; /* beaten: on to the stumps */
+    if (ae > 68) { /* an edge */
         g.edge_side = e > 0;
-        if (frand() < 0.22f * g.skill) {
+        if (frand() < 0.16f * g.skill) {
             g.how = H_BEHIND, g.got = 0;
             g.ang = (g.edge_side ? -160 : 160) * hand(), g.R = 18, g.ymax = 1.5f, g.dur = 0.55f;
         } else {
@@ -576,8 +576,8 @@ static void swing(void) {
         /* a bad ball (a full toss, a half-volley, a short one) is easier to hit for six */
         int bad = g.bounce_d < STUMPS_D || (g.bounce_d > 2.5f && g.bounce_d < 4.5f) || g.bounce_d > 10.5f;
         float r = frand();
-        if (ae < 10) g.got = bad ? (r < 0.7f ? 6 : 4) : (r < 0.35f ? 6 : r < 0.8f ? 4 : 2);
-        else if (ae < 25) g.got = bad ? (r < 0.25f ? 6 : r < 0.65f ? 4 : 2) : (r < 0.4f ? 4 : r < 0.75f ? 2 : 1);
+        if (ae < 14) g.got = bad ? (r < 0.7f ? 6 : 4) : (r < 0.35f ? 6 : r < 0.8f ? 4 : 2);
+        else if (ae < 34) g.got = bad ? (r < 0.25f ? 6 : r < 0.65f ? 4 : 2) : (r < 0.4f ? 4 : r < 0.75f ? 2 : 1);
         else g.got = r < 0.3f ? 2 : r < 0.7f ? 1 : 0;
         if (absf(a) > 110 && g.got == 6) g.got = 4; /* fine: not over the rope */
         if (g.got == 6) g.R = 80, g.ymax = 22, g.dur = 1.7f;
