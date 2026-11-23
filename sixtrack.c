@@ -313,20 +313,26 @@ static void pick_lineup(void) {
 static int over_now(void) { return g.balls / 6; }
 static float six_half_for(int over) { return maxf(0.30f - 0.035f * (float)over, 0.14f); }
 
-/* The captain's field for an over: three to five on the boundary, the rest in the ring, spread round
- * the ground, none straight behind (the keeper's) and none on top of another. */
+/* The captain's field for an over, within the playing conditions: in the powerplay (the first 30% of
+ * the overs) at most 2 fielders outside the 30-yard circle, after it at most 5; never more than 2
+ * behind square on the leg side; none straight behind (the keeper's). The rest in the ring, spread
+ * round the ground, none on top of another. Angles are for a right-hander, + to the leg side. */
 static void set_field(void) {
-    int deep = 3 + (int)(rnd() % 3);
+    int powerplay = g.balls < (int)((float)(g.overs * 6) * 0.3f + 0.999f);
+    int deep = powerplay ? 1 + (int)(rnd() % 2) : 3 + (int)(rnd() % 3), behind_leg = 0;
     for (int i = 0; i < FIELDERS; ++i) {
-        float a, r = i < deep ? 46 + frand() * 12 : 20 + frand() * 10;
+        float a, r = i < deep ? 46 + frand() * 12 : 20 + frand() * 8;
         int ok, tries = 0;
         do {
             a = -165 + frand() * 330, ok = 1;
+            if (a > 90 && behind_leg >= 2) ok = 0; /* the leg-side limit */
             for (int j = 0; j < i; ++j) {
                 float da = absf(a - g.fpos[j][0]), dr = absf(r - g.fpos[j][1]);
                 if (da < (dr < 15 ? 26 : 10)) ok = 0;
             }
-        } while (!ok && ++tries < 40);
+        } while (!ok && ++tries < 60);
+        if (a > 90 && behind_leg >= 2) a = 180 - a; /* still over the limit: to in front of square */
+        behind_leg += a > 90;
         g.fpos[i][0] = a, g.fpos[i][1] = r;
     }
 }
