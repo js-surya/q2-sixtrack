@@ -218,7 +218,9 @@ static char *puti(char *p, int v) {
 #define STUMPS_D (-1.2f)
 #define RELEASE_D 20.0f
 #define BAT_X 0.62f
-#define BAT_GUARD 0.42f /* the batter stands this far to the off side of where he is modelled: the stumps clear beside him */
+#define BAT_GUARD (-0.95f) /* where he is modelled to where he stands: in guard, the bat grounded straight in
+                              * front of the stumps, his body to the leg side of them (left, for a right-hander) */
+#define BAT_HIT 0.06f      /* across, where the bat meets the ball: in line with the stumps */
 #define STRIP_X (-0.3f) /* the strip's middle: left of the batter, under the ball's line */
 /* The strip, early to late: a red end, five bands of BAND_W, a red end. */
 #ifndef SHOW_STRIP
@@ -468,7 +470,7 @@ static void field_the_shot(void) {
     g.dropped = g.saved = 0;
     if (g.got == 6) return;
     int lofted = g.got == 2 || (g.got == 4 && frand() < 0.45f) || (g.got == 1 && frand() < 0.3f);
-    float a = deg(g.ang), ox = (BAT_X - 0.2f) * hand(), dx = -fsin(a), dd = fcos(a);
+    float a = deg(g.ang), ox = BAT_HIT * hand(), dx = -fsin(a), dd = fcos(a);
     if (lofted) {
         float land = g.got == 4 ? 46 + frand() * 10 : g.got == 2 ? 28 + frand() * 10 : 14 + frand() * 6;
         float T = g.got == 4 ? 1.5f : g.got == 2 ? 1.3f : 1.0f; /* its flight time */
@@ -537,9 +539,9 @@ static void swing(void) {
         field_the_shot();
     }
     g.state = S_HIT, g.t = 0;
-    g.bx = (BAT_X - 0.2f) * hand(), g.by = 0.8f, g.bd = 0.4f;
+    g.bx = BAT_HIT * hand(), g.by = 0.8f, g.bd = 0.4f;
     if (g.how == H_RUNS && g.got != 6 && !g.dropped && !g.saved) { /* the nearest fielder chases it */
-        float a = deg(g.ang), lx = (BAT_X - 0.2f) * hand() - fsin(a) * g.R, ld = 0.4f + fcos(a) * g.R, best = 1e9f;
+        float a = deg(g.ang), lx = BAT_HIT * hand() - fsin(a) * g.R, ld = 0.4f + fcos(a) * g.R, best = 1e9f;
         int k = 0;
         for (int i = 0; i < FIELDERS; ++i) {
             float dx = g.f[i].hx - lx, dd = g.f[i].hd - ld, q = dx * dx + dd * dd;
@@ -617,7 +619,7 @@ static void step(float dt) {
     if (g.dur > 0) {
         float u = sat(g.t / g.dur), e = g.ymax > 3 ? u : 1 - (1 - u) * (1 - u), a = deg(g.ang);
         float r = g.R * e;
-        g.bx = (BAT_X - 0.2f) * hand() - fsin(a) * r, g.bd = 0.4f + fcos(a) * r;
+        g.bx = BAT_HIT * hand() - fsin(a) * r, g.bd = 0.4f + fcos(a) * r;
         g.by = 0.8f * (1 - u) + 4 * g.ymax * u * (1 - u);
         if (u >= 1 && g.how == H_DEEP && g.catcher >= 0) g.f[g.catcher].caught = 1;
     }
