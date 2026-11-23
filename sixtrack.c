@@ -814,119 +814,77 @@ static const kit UMPIRE = { RGB(250, 250, 250), RGB(40, 40, 40), RGB(40, 40, 46)
 enum { P_IDLE, P_RUN, P_BOWL, P_SIX, P_FOUR, P_OUT, P_CATCH };
 
 /* A figure standing at (X, d), k pixels to the metre (boosted far away, so it reads), in a pose. */
-/* The figures' painter, for a clean drawn look: each part a tapered capsule (thick at one end,
- * thinner at the other, as a thigh or a forearm is), with a dark outline in its own darker colour,
- * a shadow side and a light side lit from the upper left (the floodlights), and a soft highlight. */
-static void tcap(float x0, float y0, float r0, float x1, float y1, float r1, u32 c, float a) {
-    int bx0, by0, bx1, by1;
-    float rm = maxf(r0, r1);
-    bounds(minf(x0, x1) - rm - 1, minf(y0, y1) - rm - 1, maxf(x0, x1) + rm + 1, maxf(y0, y1) + rm + 1, &bx0, &by0, &bx1, &by1);
-    float vx = x1 - x0, vy = y1 - y0, vv = vx * vx + vy * vy;
-    for (int y = by0; y < by1; ++y)
-        for (int x = bx0; x < bx1; ++x) {
-            float px = (float)x + 0.5f - x0, py = (float)y + 0.5f - y0;
-            float t = vv > 0 ? sat((px * vx + py * vy) / vv) : 0, dx = px - vx * t, dy = py - vy * t;
-            plot(x, y, c, a * sat(mixf(r0, r1, t) + 0.5f - fsqrt(dx * dx + dy * dy)));
-        }
-}
-static float outline_w(float r) { return clampf(0.09f * r, 0.6f, 1.3f); }
-static void part(float x0, float y0, float r0, float x1, float y1, float r1, u32 c) {
-    if (r0 < 0.6f) r0 = 0.6f;
-    if (r1 < 0.6f) r1 = 0.6f;
-    float o = outline_w(maxf(r0, r1));
-    tcap(x0, y0, r0 + o, x1, y1, r1 + o, shade(c, 0.3f), 1);           /* outline */
-    tcap(x0, y0, r0, x1, y1, r1, shade(c, 0.76f), 1);                  /* the shadow side */
-    if (maxf(r0, r1) < 1.4f) return;                                     /* too small for more */
-    tcap(x0 - 0.16f * r0, y0 - 0.1f * r0, r0 * 0.82f, x1 - 0.16f * r1, y1 - 0.1f * r1, r1 * 0.82f, c, 1); /* the light side */
-    tcap(x0 - 0.42f * r0, y0 - 0.3f * r0, r0 * 0.22f, x1 - 0.42f * r1, y1 - 0.3f * r1, r1 * 0.22f, shade(c, 1.22f), 0.5f);
-}
-static void pdisc(float x, float y, float r, u32 c) {
-    if (r < 0.6f) r = 0.6f;
-    float o = outline_w(r);
-    disc(x, y, r + o, shade(c, 0.3f), 1);
-    disc(x, y, r, shade(c, 0.76f), 1);
-    if (r < 1.4f) return;
-    disc(x - 0.16f * r, y - 0.12f * r, r * 0.82f, c, 1);
-    disc(x - 0.36f * r, y - 0.38f * r, r * 0.26f, shade(c, 1.35f), 0.55f);
-}
-static void scap(float x0, float y0, float x1, float y1, float r, u32 c) { part(x0, y0, r, x1, y1, r, c); }
-static void sdisc(float x, float y, float r, u32 c) { pdisc(x, y, r, c); }
+/* The other players: drawn frames (art/gen_people.py, packed into sprites.h), facing us. */
+#include "sprites.h"
 
-/* A fielder, the bowler, the umpire or the non-striker, facing us, standing at (X, d), drawn boost
- * times life size so it reads far away, in a pose: ready (crouched, walking in), running, bowling,
- * catching, or the umpire's signals. ph drives the motion. */
+static u32 frame_buf[128 * 128]; /* one people frame, decoded */
+
+/* People frame f, decoded and scaled smoothly (bilinear, premultiplied) to h pixels tall, standing at
+ * (x, y). */
+static void blit_scaled(int f, float x, float y, float h) {
+    const sprite *s = &people_frames[f];
+    const unsigned *p = people_px + s->off;
+    int n = s->w * s->h, i = 0;
+    if (n > (int)(sizeof frame_buf / sizeof *frame_buf)) return;
+    while (i < n) {
+        unsigned w = *p++;
+        if (w & 0x80000000u) {
+            for (unsigned k = w & 0x7fffffffu; k--;) frame_buf[i++] = 0;
+            continue;
+        }
+        for (unsigned k = 0; k < w; ++k) frame_buf[i++] = *p++;
+    }
+    float sc = h / PEOPLE_H, inv = 1 / sc;
+    int x0 = (int)(x - (float)s->ax * sc) - 1, x1 = (int)(x + (float)(s->w - s->ax) * sc) + 1;
+    int y0 = (int)(y - (float)s->ay * sc) - 1, y1 = (int)(y + (float)(s->h - s->ay) * sc) + 1;
+    for (int py = y0; py <= y1; ++py) {
+        if ((unsigned)py >= H) continue;
+        float sy = (float)s->ay + ((float)py + 0.5f - y) * inv - 0.5f;
+        int iy = (int)(sy + 1) - 1;
+        float fy = sy - (float)iy;
+        for (int px = x0; px <= x1; ++px) {
+            if ((unsigned)px >= W) continue;
+            float sx = (float)s->ax + ((float)px + 0.5f - x) * inv - 0.5f;
+            int ix = (int)(sx + 1) - 1;
+            float fx = sx - (float)ix, r = 0, gr = 0, b = 0, a = 0;
+            for (int q = 0; q < 4; ++q) {
+                int tx = ix + (q & 1), ty = iy + (q >> 1);
+                if (tx < 0 || ty < 0 || tx >= s->w || ty >= s->h) continue;
+                u32 c = frame_buf[ty * s->w + tx];
+                float wgt = ((q & 1) ? fx : 1 - fx) * ((q >> 1) ? fy : 1 - fy), al = (float)(c >> 24) * wgt;
+                r += (float)(c >> 16 & 255) * al, gr += (float)(c >> 8 & 255) * al, b += (float)(c & 255) * al, a += al;
+            }
+            if (a < 1) continue;
+            plot(px, py, RGB((u32)(r / a), (u32)(gr / a), (u32)(b / a)), a * (1 / 255.0f));
+        }
+    }
+}
+
+/* A fielder, the bowler, the umpire or the non-striker (by kit), standing at (X, d), drawn boost times
+ * life size so it reads far away, in a pose; ph drives the motion. */
 static void figure(float X, float d, float boost, const kit *c, int pose, float ph) {
     float fx, fy;
     proj(X, 0, d, &fx, &fy);
-    float k = scale_at(d) * boost;
-    int umpire = c == &UMPIRE;
-    for (int i = 0; i < 4; ++i) { /* a shadow from each floodlight */
-        float sx = (i & 1 ? 1 : -1) * 0.45f * k, sy = (i & 2 ? 0.05f : -0.05f) * k;
-        ellipse(fx + sx, fy + sy, 0.5f * k, 0.07f * k, RGB(0, 0, 0), 0.12f);
-    }
-    /* the crouch: fielders ready, walking in */
-    float crouch = pose == P_IDLE && !umpire ? 0.1f + 0.03f * fsin(ph * 0.5f) : pose == P_RUN ? 0.06f : 0;
-    float stride = pose == P_RUN ? 0.24f * fsin(ph) : pose == P_IDLE && !umpire ? 0.05f * fsin(ph * 0.5f) : 0;
-    float hip = fy - (0.92f - crouch) * k, sh = fy - (1.42f - crouch * 1.3f) * k, head = sh - 0.25f * k;
-    float lean = pose == P_IDLE && !umpire ? 0.04f * k : 0; /* weight forward, toward us */
-    /* legs: thigh to knee to foot, knees bent by the crouch and the stride */
-    for (int sgn = -1; sgn <= 1; sgn += 2) {
-        float st = (float)sgn * stride, fxx = fx + (float)sgn * 0.13f * k + st * 0.4f * k;
-        float kx = fx + (float)sgn * (0.13f + crouch * 0.6f) * k + st * 0.2f * k, ky = fy - (0.48f - crouch * 0.3f - absf(st) * 0.2f) * k;
-        scap(fx + (float)sgn * 0.09f * k, hip, kx, ky, 0.085f * k, c->pants);
-        scap(kx, ky, fxx, fy - 0.07f * k, 0.07f * k, c->pants);
-        scap(fxx - 0.03f * k, fy - 0.03f * k, fxx + 0.05f * k, fy - 0.03f * k, 0.05f * k, RGB(248, 248, 248)); /* shoe */
-    }
-    /* the torso: a V, the trim at the neck and shoulders, a badge on the chest */
-    float shx = fx + lean;
-    scap(fx, hip, shx, sh + 0.05f * k, 0.18f * k, c->shirt);
-    scap(fx - 0.09f * k, hip, shx - 0.16f * k, sh + 0.04f * k, 0.09f * k, c->shirt);
-    scap(fx + 0.09f * k, hip, shx + 0.16f * k, sh + 0.04f * k, 0.09f * k, c->shirt);
-    scap(shx - 0.2f * k, sh + 0.04f * k, shx + 0.2f * k, sh + 0.04f * k, 0.08f * k, c->shirt);
-    capsule(shx - 0.07f * k, sh + 0.02f * k, shx + 0.07f * k, sh + 0.02f * k, maxf(0.5f, 0.025f * k), c->trim, 0.9f);
-    if (!umpire) disc(shx + 0.09f * k, sh + 0.16f * k, maxf(0.5f, 0.035f * k), c->trim, 0.9f);
-    if (umpire) capsule(shx, sh + 0.06f * k, shx, hip - 0.02f * k, maxf(0.4f, 0.012f * k), RGB(170, 170, 170), 0.8f); /* the coat's opening */
-    /* arms: shoulder, elbow, hand, per pose (hand offsets in arm lengths, x out, y down) */
-    float al = 0.6f * k, ax0 = -0.3f, ay0 = 0.9f, ax1 = 0.3f, ay1 = 0.9f;
-    if (pose == P_IDLE && !umpire) ax0 = -0.12f, ay0 = 0.95f, ax1 = 0.12f, ay1 = 0.95f; /* hands toward the knees */
-    else if (pose == P_RUN) ax0 = -0.25f + 0.35f * fsin(ph), ay0 = 0.75f, ax1 = 0.25f - 0.35f * fsin(ph), ay1 = 0.75f;
-    else if (pose == P_BOWL) ax1 = fsin(ph), ay1 = fcos(ph), ax0 = -0.5f, ay0 = -0.4f; /* the bowling arm over the top */
-    else if (pose == P_SIX) ax0 = -0.25f, ay0 = -1, ax1 = 0.25f, ay1 = -1;
-    else if (pose == P_FOUR) ax0 = -0.2f, ay0 = 0.9f, ax1 = 0.6f + 0.35f * fsin(ph * 9), ay1 = -0.1f;
-    else if (pose == P_OUT) ax0 = -0.3f, ay0 = 0.85f, ax1 = 0.15f, ay1 = -1;
-    else if (pose == P_CATCH) ax0 = -0.12f, ay0 = -0.9f, ax1 = 0.12f, ay1 = -0.9f; /* cupped above the head */
-    for (int a = 0; a < 2; ++a) {
-        float sgn = a ? 1.0f : -1.0f, sx0 = shx + sgn * 0.2f * k, sy0 = sh + 0.06f * k;
-        float hx = sx0 + (a ? ax1 : ax0) * al, hy = sy0 + (a ? ay1 : ay0) * al;
-        float ex = mixf(sx0, hx, 0.5f) + sgn * 0.06f * k, ey = mixf(sy0, hy, 0.5f);
-        scap(sx0, sy0, mixf(sx0, ex, 0.6f), mixf(sy0, ey, 0.6f), 0.065f * k, umpire ? c->shirt : c->shirt); /* sleeve */
-        scap(mixf(sx0, ex, 0.6f), mixf(sy0, ey, 0.6f), ex, ey, 0.048f * k, umpire ? c->shirt : c->skin);
-        scap(ex, ey, hx, hy, 0.045f * k, umpire ? c->shirt : c->skin);
-        sdisc(hx, hy, 0.05f * k, c->skin);
-    }
-    /* the head: neck, face (eyes toward us), the cap and its peak, or the umpire's hat */
-    scap(shx, sh, shx, head + 0.08f * k, 0.05f * k, c->skin);
-    sdisc(shx, head, 0.13f * k, c->skin);
-    if (k > 9) {
-        disc(shx - 0.045f * k, head + 0.01f * k, 0.016f * k, RGB(30, 24, 20), 1);
-        disc(shx + 0.045f * k, head + 0.01f * k, 0.016f * k, RGB(30, 24, 20), 1);
-    }
-    if (umpire) {
-        ellipse(shx, head - 0.07f * k, 0.25f * k, 0.05f * k, shade(c->cap, 1.4f), 1);
-        sdisc(shx, head - 0.11f * k, 0.12f * k, c->cap);
-        ellipse(shx, head - 0.07f * k, 0.25f * k, 0.035f * k, c->cap, 1);
-    } else {
-        sdisc(shx, head - 0.06f * k, 0.135f * k, c->cap);
-        ellipse(shx, head - 0.01f * k, 0.16f * k, 0.035f * k, shade(c->cap, 0.8f), 1); /* the peak, toward us */
-        disc(shx, head - 0.11f * k, maxf(0.4f, 0.02f * k), c->trim, 0.8f);                 /* the button */
-    }
+    float h = 1.85f * scale_at(d) * boost;
+    int f;
+    if (c == &UMPIRE)
+        f = pose == P_SIX ? PF_U_SIX : pose == P_FOUR ? ((int)(ph * 4) & 1 ? PF_U_FOUR1 : PF_U_FOUR0)
+          : pose == P_OUT ? PF_U_OUT : PF_U_STAND;
+    else if (c == &BATTING)
+        f = pose == P_RUN ? ((int)ph & 1 ? PF_N_JOG1 : PF_N_JOG0) : PF_N_STAND;
+    else if (pose == P_BOWL)
+        f = ph - PI < 1 ? PF_B_BOWL0 : ph - PI < 2 ? PF_B_BOWL1 : PF_B_BOWL2;
+    else if (pose == P_RUN) {
+        static const int cycle[4] = { PF_F_RUN0, PF_F_RUN1, PF_F_RUN2, PF_F_RUN3 };
+        f = cycle[(int)(ph / (PI / 2)) & 3];
+    } else if (pose == P_CATCH) f = PF_F_CATCH;
+    else f = fsin(ph * 0.5f) > 0 ? PF_F_READY0 : PF_F_READY1;
+    blit_scaled(f, fx, fy, h);
 }
 
 /* The batter: drawn frames (art/gen_batter.py, packed by art/pack.py into sprites.h), a right-hander
  * seen from behind; a left-hander is the same frames mirrored. He stands in his crease, a little to
  * the leg side of the stumps, the bat grounded in front of them; his shirt number is printed on. */
-#include "sprites.h"
-
 /* Frame f with its back foot at (x, y); flip mirrors it about that foot. */
 static void blit(int f, float x, float y, int flip) {
     const sprite *s = &batter_frames[f];
@@ -1054,10 +1012,7 @@ static void people(void) {
         figure(f->x, f->d, 3.0f, &FIELDING, f->caught ? P_CATCH : moving ? P_RUN : P_IDLE, g.clock * 12);
     }
     if (g.state != S_MENU) { /* the non-striker, bat in hand, at the bowler's end */
-        float nx, ny, nk = scale_at(19.4f) * 2.5f;
         figure(-1.35f, 19.4f, 2.5f, &BATTING, g.state == S_BALL && g.t < 0.6f ? P_RUN : P_IDLE, g.clock * 8);
-        proj(-1.35f, 0, 19.4f, &nx, &ny);
-        capsule(nx + 0.3f * nk, ny - 0.85f * nk, nx + 0.42f * nk, ny - 0.05f * nk, maxf(0.6f, 0.04f * nk), RGB(198, 154, 96), 1);
     }
     figure(0.55f, bd, 2.5f, &FIELDING, bpose, ph);
     for (int n = 0; n < FIELDERS; ++n) {
