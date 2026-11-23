@@ -810,21 +810,43 @@ static const kit UMPIRE = { RGB(250, 250, 250), RGB(40, 40, 40), RGB(40, 40, 46)
 enum { P_IDLE, P_RUN, P_BOWL, P_SIX, P_FOUR, P_OUT, P_CATCH };
 
 /* A figure standing at (X, d), k pixels to the metre (boosted far away, so it reads), in a pose. */
-/* Lit from the upper left, as the batter: shade, colour, highlight (screen pixels) */
-static void scap(float x0, float y0, float x1, float y1, float r, u32 c) {
-    if (r < 0.7f) r = 0.7f;
-    capsule(x0, y0, x1, y1, r, shade(c, 0.72f), 1);
-    if (r < 1.2f) return; /* too small for more */
-    capsule(x0 - r * 0.2f, y0 - r * 0.12f, x1 - r * 0.2f, y1 - r * 0.12f, r * 0.72f, c, 1);
-    capsule(x0 - r * 0.42f, y0 - r * 0.2f, x1 - r * 0.42f, y1 - r * 0.2f, r * 0.22f, shade(c, 1.3f), 0.5f);
+/* The figures' painter, for a clean drawn look: each part a tapered capsule (thick at one end,
+ * thinner at the other, as a thigh or a forearm is), with a dark outline in its own darker colour,
+ * a shadow side and a light side lit from the upper left (the floodlights), and a soft highlight. */
+static void tcap(float x0, float y0, float r0, float x1, float y1, float r1, u32 c, float a) {
+    int bx0, by0, bx1, by1;
+    float rm = maxf(r0, r1);
+    bounds(minf(x0, x1) - rm - 1, minf(y0, y1) - rm - 1, maxf(x0, x1) + rm + 1, maxf(y0, y1) + rm + 1, &bx0, &by0, &bx1, &by1);
+    float vx = x1 - x0, vy = y1 - y0, vv = vx * vx + vy * vy;
+    for (int y = by0; y < by1; ++y)
+        for (int x = bx0; x < bx1; ++x) {
+            float px = (float)x + 0.5f - x0, py = (float)y + 0.5f - y0;
+            float t = vv > 0 ? sat((px * vx + py * vy) / vv) : 0, dx = px - vx * t, dy = py - vy * t;
+            plot(x, y, c, a * sat(mixf(r0, r1, t) + 0.5f - fsqrt(dx * dx + dy * dy)));
+        }
 }
-static void sdisc(float x, float y, float r, u32 c) {
-    if (r < 0.7f) r = 0.7f;
-    disc(x, y, r, shade(c, 0.72f), 1);
-    if (r < 1.2f) return;
-    disc(x - r * 0.2f, y - r * 0.18f, r * 0.75f, c, 1);
-    disc(x - r * 0.38f, y - r * 0.4f, r * 0.25f, shade(c, 1.5f), 0.55f);
+static float outline_w(float r) { return clampf(0.09f * r, 0.6f, 1.3f); }
+static void part(float x0, float y0, float r0, float x1, float y1, float r1, u32 c) {
+    if (r0 < 0.6f) r0 = 0.6f;
+    if (r1 < 0.6f) r1 = 0.6f;
+    float o = outline_w(maxf(r0, r1));
+    tcap(x0, y0, r0 + o, x1, y1, r1 + o, shade(c, 0.3f), 1);           /* outline */
+    tcap(x0, y0, r0, x1, y1, r1, shade(c, 0.76f), 1);                  /* the shadow side */
+    if (maxf(r0, r1) < 1.4f) return;                                     /* too small for more */
+    tcap(x0 - 0.16f * r0, y0 - 0.1f * r0, r0 * 0.82f, x1 - 0.16f * r1, y1 - 0.1f * r1, r1 * 0.82f, c, 1); /* the light side */
+    tcap(x0 - 0.42f * r0, y0 - 0.3f * r0, r0 * 0.22f, x1 - 0.42f * r1, y1 - 0.3f * r1, r1 * 0.22f, shade(c, 1.22f), 0.5f);
 }
+static void pdisc(float x, float y, float r, u32 c) {
+    if (r < 0.6f) r = 0.6f;
+    float o = outline_w(r);
+    disc(x, y, r + o, shade(c, 0.3f), 1);
+    disc(x, y, r, shade(c, 0.76f), 1);
+    if (r < 1.4f) return;
+    disc(x - 0.16f * r, y - 0.12f * r, r * 0.82f, c, 1);
+    disc(x - 0.36f * r, y - 0.38f * r, r * 0.26f, shade(c, 1.35f), 0.55f);
+}
+static void scap(float x0, float y0, float x1, float y1, float r, u32 c) { part(x0, y0, r, x1, y1, r, c); }
+static void sdisc(float x, float y, float r, u32 c) { pdisc(x, y, r, c); }
 
 /* A fielder, the bowler, the umpire or the non-striker, facing us, standing at (X, d), drawn boost
  * times life size so it reads far away, in a pose: ready (crouched, walking in), running, bowling,
@@ -906,7 +928,7 @@ static float ease(float t) { t = sat(t); return t * t * (3 - 2 * t); }
 
 static v3 bat_anchor; /* the figure's feet: what it is scaled up about */
 #define BAT_BOOST 2.1f
-#define BAT_TURN 0.62f /* radians */
+#define BAT_TURN 0.38f /* radians */
 static void bp(v3 p, float *sx, float *sy) {
     p.x *= hand(); /* a left-hander: the same figure, mirrored */
     { /* turned a third toward the off side, the three-quarter view that shows the crouch */
@@ -924,20 +946,17 @@ static void limb(v3 a, v3 b, float r, u32 c) {
     bp(a, &x0, &y0), bp(b, &x1, &y1);
     capsule(x0, y0, x1, y1, r * bk(), c, 1);
 }
-/* A rounded part lit by the floodlights from the upper left: its shade, its colour, a highlight. */
-static void slimb(v3 a, v3 b, float r, u32 c) {
-    float x0, y0, x1, y1, R = r * bk();
+/* A part between two joints, r0 thick at a, r1 at b, in the figure's perspective */
+static void slimb2(v3 a, v3 b, float r0, float r1, u32 c) {
+    float x0, y0, x1, y1;
     bp(a, &x0, &y0), bp(b, &x1, &y1);
-    capsule(x0, y0, x1, y1, R, shade(c, 0.72f), 1);
-    capsule(x0 - R * 0.22f, y0 - R * 0.12f, x1 - R * 0.22f, y1 - R * 0.12f, R * 0.72f, c, 1);
-    capsule(x0 - R * 0.45f, y0 - R * 0.2f, x1 - R * 0.45f, y1 - R * 0.2f, R * 0.22f, shade(c, 1.3f), 0.55f);
+    part(x0, y0, r0 * bk(), x1, y1, r1 * bk(), c);
 }
+static void slimb(v3 a, v3 b, float r, u32 c) { slimb2(a, b, r, r, c); }
 static void sblob(v3 a, float r, u32 c) {
-    float x, y, R = r * bk();
+    float x, y;
     bp(a, &x, &y);
-    disc(x, y, R, shade(c, 0.72f), 1);
-    disc(x - R * 0.2f, y - R * 0.18f, R * 0.75f, c, 1);
-    disc(x - R * 0.38f, y - R * 0.4f, R * 0.25f, shade(c, 1.5f), 0.6f);
+    pdisc(x, y, r * bk(), c);
 }
 static void blob(v3 a, float r, u32 c) {
     float x, y;
@@ -956,7 +975,7 @@ static pose pmix(pose a, pose b, float t) {
 /* the crouch: bent forward at the hips (lean, radians), knees bent, bottom back, hands low at the front
  * thigh, the bat's toe on the ground in front of the back foot */
 static const pose STANCE = { { 0.74f, 0, -0.04f }, { 0.48f, 0, 0.5f }, { 0.80f, 0.62f, 0.34f }, { 0.92f, 0.02f, 0.14f }, 0.2f, 0.62f };
-static const pose BACKLIFT = { { 0.74f, 0, -0.04f }, { 0.46f, 0, 0.56f }, { 0.90f, 0.98f, 0.10f }, { 1.10f, 1.62f, -0.48f }, 0.2f, 0.55f };
+static const pose BACKLIFT = { { 0.74f, 0, -0.04f }, { 0.46f, 0, 0.56f }, { 0.94f, 1.02f, 0.10f }, { 1.40f, 1.78f, -0.12f }, 0.2f, 0.55f };
 static const pose LEAVE = { { 0.78f, 0, 0.0f }, { 0.48f, 0, 0.58f }, { 0.76f, 1.75f, 0.18f }, { 0.86f, 2.55f, 0.02f }, 0.08f, 0.2f };
 /* each shot: its contact, then its follow-through (feet are set by the length) */
 static const pose SHOT[5][2] = {
@@ -1010,9 +1029,9 @@ static v3 vadd(v3 a, float x, float y, float d) { return V(a.x + x, a.y + y, a.d
 /* A leg: the trouser thigh, then the pad over knee and shin (its ridges, the knee roll, straps), the shoe */
 static void leg(v3 hipj, v3 knee, v3 foot, u32 trouser) {
     const u32 PAD = RGB(246, 246, 240), RIDGE = RGB(196, 198, 206);
-    slimb(hipj, knee, 0.105f, trouser);
+    slimb2(hipj, knee, 0.13f, 0.095f, trouser);
     v3 top = vlerp(hipj, knee, 0.75f), ankle = vadd(foot, 0, 0.08f, 0);
-    slimb(top, ankle, 0.088f, PAD);
+    slimb2(top, ankle, 0.1f, 0.078f, PAD);
     for (int i = -1; i <= 1; ++i) /* the pad's ridges */
         limb(vadd(top, 0.035f * (float)i, -0.02f, -0.02f), vadd(ankle, 0.03f * (float)i, 0.03f, -0.02f), 0.007f, RIDGE);
     sblob(knee, 0.1f, PAD);                                                 /* the knee roll */
@@ -1027,13 +1046,13 @@ static void leg(v3 hipj, v3 knee, v3 foot, u32 trouser) {
 /* An arm: a short sleeve, the bare forearm, a glove at the hand */
 static void arm(v3 shoulder, v3 elbow, v3 hand, u32 kit, u32 skin) {
     v3 cuff = vlerp(shoulder, elbow, 0.62f);
-    slimb(shoulder, cuff, 0.068f, kit);
-    slimb(cuff, elbow, 0.05f, skin);
-    slimb(elbow, hand, 0.047f, skin);
+    slimb2(cuff, elbow, 0.066f, 0.058f, skin);
+    slimb2(elbow, hand, 0.062f, 0.048f, skin);
+    slimb2(shoulder, cuff, 0.095f, 0.08f, kit);
 }
 
 static void glove(v3 at) {
-    sblob(at, 0.07f, RGB(250, 250, 250));
+    sblob(at, 0.085f, RGB(250, 250, 250));
     for (int i = -1; i <= 1; ++i) /* finger rolls */
         limb(vadd(at, -0.05f, 0.025f * (float)i, 0), vadd(at, 0.05f, 0.025f * (float)i, 0), 0.006f, RGB(186, 190, 200));
 }
@@ -1047,9 +1066,9 @@ static void batter(void) {
     /* the hips back over the feet, the body hinged forward from them by lean */
     v3 hip = V(mixf(p.back.x, p.front.x, 0.45f) + 0.02f, 0.92f - c, mixf(p.back.d, p.front.d, 0.4f) - 0.06f * l);
     v3 hipL = V(hip.x - 0.1f, hip.y, hip.d + 0.08f), hipR = V(hip.x + 0.1f, hip.y, hip.d - 0.08f);
-    v3 sh = V(hip.x + 0.03f, hip.y + 0.52f * fcos(l), hip.d + 0.52f * fsin(l));
-    v3 shL = V(sh.x - 0.17f, sh.y, sh.d + 0.1f), shR = V(sh.x + 0.18f, sh.y - 0.02f, sh.d - 0.08f);
-    v3 head = V(sh.x - 0.02f, sh.y + 0.24f * fcos(l * 0.55f), sh.d + 0.24f * fsin(l * 0.55f) + 0.04f); /* looking down the pitch */
+    v3 sh = V(hip.x + 0.03f, hip.y + 0.48f * fcos(l), hip.d + 0.48f * fsin(l));
+    v3 shL = V(sh.x - 0.2f, sh.y, sh.d + 0.08f), shR = V(sh.x + 0.2f, sh.y - 0.02f, sh.d - 0.06f);
+    v3 head = V(sh.x - 0.02f, sh.y + 0.27f * fcos(l * 0.55f), sh.d + 0.27f * fsin(l * 0.55f) + 0.04f); /* looking down the pitch */
     v3 kneeF = V(mixf(hipL.x, p.front.x, 0.5f) - 0.03f, 0.5f - c * 0.5f, mixf(hipL.d, p.front.d, 0.55f) + 0.06f + c * 0.5f);
     v3 kneeB = V(mixf(hipR.x, p.back.x, 0.5f) + 0.03f, 0.5f - c * 0.5f, mixf(hipR.d, p.back.d, 0.5f) + 0.06f + c * 0.5f);
     /* floodlight shadows */
@@ -1059,10 +1078,9 @@ static void batter(void) {
         ellipse(fx + (i & 1 ? 1 : -1) * 0.55f * bk(), fy + (i & 2 ? 0.05f : -0.03f) * bk(), 0.7f * bk(), 0.09f * bk(), RGB(0, 0, 0), 0.12f);
     /* the front leg, the body, the near (back) leg */
     leg(hipL, kneeF, p.front, TROUSER);
-    slimb(hip, sh, 0.19f, KIT);                                 /* the torso: a V, broad at the shoulders */
-    slimb(hipL, shL, 0.11f, KIT), slimb(hipR, shR, 0.11f, KIT);
-    slimb(shL, shR, 0.1f, KIT);
-    slimb(hipL, hipR, 0.12f, TROUSER);                          /* the waist */
+    slimb2(hipL, hipR, 0.13f, 0.13f, TROUSER);                  /* the waist */
+    slimb2(hip, vlerp(hip, sh, 0.8f), 0.16f, 0.21f, KIT);        /* the torso: a V, broad at the shoulders */
+    slimb2(shL, shR, 0.12f, 0.12f, KIT);
     limb(V(shL.x, shL.y + 0.06f, shL.d), V(shR.x, shR.y + 0.06f, shR.d), 0.025f, BATTING.trim); /* the shoulders' trim */
     { /* the shirt number, across the back */
         char n[4];
@@ -1098,7 +1116,7 @@ static void batter(void) {
 #undef ALONG
     /* the helmet: its peak down the pitch, side flaps, the grille, the neck guard toward us */
     slimb(vadd(head, 0, -0.2f, -0.02f), vadd(head, 0, -0.1f, -0.02f), 0.05f, SKIN); /* neck */
-    sblob(head, 0.145f, BATTING.cap);
+    sblob(head, 0.175f, BATTING.cap);
     slimb(vadd(head, 0, -0.02f, 0.06f), vadd(head, -0.02f, -0.05f, 0.22f), 0.04f, BATTING.cap); /* the peak */
     slimb(vadd(head, 0.02f, -0.06f, 0.16f), vadd(head, 0.04f, -0.16f, 0.15f), 0.018f, RGB(170, 172, 182)); /* the grille's edge, just seen */
     sblob(vadd(head, 0.1f, -0.06f, 0.02f), 0.045f, BATTING.cap);              /* the side flap over the ear */
