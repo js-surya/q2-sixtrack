@@ -33,7 +33,7 @@ Not affiliated with any cricket game, league or team. The players and artwork ar
 
 ## Install
 
-**Requires Q2 Pod 1.9.0 or later.**
+**Requires Q2 Pod 1.8.0 or later.**
 
 From the Q2: **Library → App Store → Games → Six Track**. Or unzip a release's zip at the root of the
 card. The game is in **Library → Games**.
