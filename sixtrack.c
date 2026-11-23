@@ -851,8 +851,13 @@ static float ease(float t) { t = sat(t); return t * t * (3 - 2 * t); }
 
 static v3 bat_anchor; /* the figure's feet: what it is scaled up about */
 #define BAT_BOOST 2.1f
+#define BAT_TURN 0.62f /* radians */
 static void bp(v3 p, float *sx, float *sy) {
     p.x *= hand(); /* a left-hander: the same figure, mirrored */
+    { /* turned a third toward the off side, the three-quarter view that shows the crouch */
+        float phi = BAT_TURN * hand(), cs = fcos(phi), sn = fsin(phi), dx = p.x - bat_anchor.x, dd = p.d - bat_anchor.d;
+        p.x = bat_anchor.x + dx * cs + dd * sn, p.d = bat_anchor.d - dx * sn + dd * cs;
+    }
     v3 q = V(bat_anchor.x + (p.x - bat_anchor.x) * BAT_BOOST, (p.y) * BAT_BOOST,
              bat_anchor.d + (p.d - bat_anchor.d) * BAT_BOOST);
     proj(q.x, q.y, q.d, sx, sy);
@@ -892,21 +897,23 @@ static pose pmix(pose a, pose b, float t) {
 }
 
 /* hands: the top glove, at the top of the handle; toe: where the bat's toe points */
-static const pose STANCE = { { 0.76f, 0, -0.02f }, { 0.44f, 0, 0.48f }, { 0.84f, 0.74f, 0.20f }, { 0.98f, 0.02f, 0.02f }, 0.13f, 0.06f };
-static const pose BACKLIFT = { { 0.76f, 0, -0.02f }, { 0.42f, 0, 0.54f }, { 0.92f, 1.08f, 0.00f }, { 1.12f, 1.72f, -0.55f }, 0.15f, 0.08f };
-static const pose LEAVE = { { 0.78f, 0, 0.0f }, { 0.48f, 0, 0.58f }, { 0.76f, 1.75f, 0.18f }, { 0.86f, 2.55f, 0.02f }, 0.05f, 0 };
+/* the crouch: bent forward at the hips (lean, radians), knees bent, bottom back, hands low at the front
+ * thigh, the bat's toe on the ground in front of the back foot */
+static const pose STANCE = { { 0.74f, 0, -0.04f }, { 0.48f, 0, 0.5f }, { 0.80f, 0.62f, 0.34f }, { 0.92f, 0.02f, 0.14f }, 0.2f, 0.62f };
+static const pose BACKLIFT = { { 0.74f, 0, -0.04f }, { 0.46f, 0, 0.56f }, { 0.90f, 0.98f, 0.10f }, { 1.10f, 1.62f, -0.48f }, 0.2f, 0.55f };
+static const pose LEAVE = { { 0.78f, 0, 0.0f }, { 0.48f, 0, 0.58f }, { 0.76f, 1.75f, 0.18f }, { 0.86f, 2.55f, 0.02f }, 0.08f, 0.2f };
 /* each shot: its contact, then its follow-through (feet are set by the length) */
 static const pose SHOT[5][2] = {
-    { { { 0, 0, 0 }, { 0, 0, 0 }, { 0.56f, 0.92f, 0.46f }, { 0.20f, 0.22f, 0.12f }, 0.2f, 0.15f }, /* glance, fine leg */
-      { { 0, 0, 0 }, { 0, 0, 0 }, { 0.44f, 1.05f, 0.30f }, { -0.05f, 0.75f, -0.30f }, 0.2f, 0.1f } },
-    { { { 0, 0, 0 }, { 0, 0, 0 }, { 0.52f, 1.12f, 0.46f }, { -0.30f, 1.05f, 0.62f }, 0.18f, 0.05f }, /* pull, midwicket */
-      { { 0, 0, 0 }, { 0, 0, 0 }, { 0.38f, 1.32f, 0.18f }, { 0.02f, 1.45f, -0.55f }, 0.15f, 0 } },
-    { { { 0, 0, 0 }, { 0, 0, 0 }, { 0.64f, 0.78f, 0.64f }, { 0.58f, 0.06f, 0.95f }, 0.25f, 0.3f }, /* drive, straight */
-      { { 0, 0, 0 }, { 0, 0, 0 }, { 0.44f, 1.62f, 0.50f }, { 0.30f, 2.20f, 0.10f }, 0.12f, 0.2f } },
-    { { { 0, 0, 0 }, { 0, 0, 0 }, { 0.88f, 0.98f, 0.52f }, { 1.62f, 0.78f, 0.62f }, 0.22f, 0.2f }, /* off-drive, cover */
-      { { 0, 0, 0 }, { 0, 0, 0 }, { 0.88f, 1.48f, 0.34f }, { 1.40f, 1.98f, -0.05f }, 0.15f, 0.12f } },
-    { { { 0, 0, 0 }, { 0, 0, 0 }, { 0.92f, 0.88f, 0.34f }, { 1.30f, 0.30f, 0.0f }, 0.22f, 0.1f }, /* dab, third man */
-      { { 0, 0, 0 }, { 0, 0, 0 }, { 0.96f, 1.02f, 0.22f }, { 1.42f, 0.70f, -0.20f }, 0.2f, 0.05f } },
+    { { { 0, 0, 0 }, { 0, 0, 0 }, { 0.56f, 0.92f, 0.46f }, { 0.20f, 0.22f, 0.12f }, 0.2f, 0.5f }, /* glance, fine leg */
+      { { 0, 0, 0 }, { 0, 0, 0 }, { 0.44f, 1.05f, 0.30f }, { -0.05f, 0.75f, -0.30f }, 0.2f, 0.4f } },
+    { { { 0, 0, 0 }, { 0, 0, 0 }, { 0.52f, 1.12f, 0.46f }, { -0.30f, 1.05f, 0.62f }, 0.18f, 0.3f }, /* pull, midwicket */
+      { { 0, 0, 0 }, { 0, 0, 0 }, { 0.38f, 1.32f, 0.18f }, { 0.02f, 1.45f, -0.55f }, 0.15f, 0.2f } },
+    { { { 0, 0, 0 }, { 0, 0, 0 }, { 0.64f, 0.78f, 0.64f }, { 0.58f, 0.06f, 0.95f }, 0.25f, 0.72f }, /* drive, straight */
+      { { 0, 0, 0 }, { 0, 0, 0 }, { 0.44f, 1.62f, 0.50f }, { 0.30f, 2.20f, 0.10f }, 0.12f, 0.45f } },
+    { { { 0, 0, 0 }, { 0, 0, 0 }, { 0.88f, 0.98f, 0.52f }, { 1.62f, 0.78f, 0.62f }, 0.22f, 0.62f }, /* off-drive, cover */
+      { { 0, 0, 0 }, { 0, 0, 0 }, { 0.88f, 1.48f, 0.34f }, { 1.40f, 1.98f, -0.05f }, 0.15f, 0.42f } },
+    { { { 0, 0, 0 }, { 0, 0, 0 }, { 0.92f, 0.88f, 0.34f }, { 1.30f, 0.30f, 0.0f }, 0.22f, 0.58f }, /* dab, third man */
+      { { 0, 0, 0 }, { 0, 0, 0 }, { 0.96f, 1.02f, 0.22f }, { 1.42f, 0.70f, -0.20f }, 0.2f, 0.5f } },
 };
 
 static pose with_feet(pose p, int full, int shortb) { /* footwork: forward to a full ball, back to a short one */
@@ -981,13 +988,14 @@ static void batter(void) {
     const u32 KIT = BATTING.shirt, TROUSER = shade(BATTING.shirt, 0.8f), SKIN = BATTING.skin;
     float c = p.crouch, l = p.lean;
     /* hips and shoulders, side-on: the left (toward the bowler) and the right (toward us) */
-    v3 hip = V(mixf(p.back.x, p.front.x, 0.45f) + 0.02f, 0.92f - c, mixf(p.back.d, p.front.d, 0.45f));
+    /* the hips back over the feet, the body hinged forward from them by lean */
+    v3 hip = V(mixf(p.back.x, p.front.x, 0.45f) + 0.02f, 0.92f - c, mixf(p.back.d, p.front.d, 0.4f) - 0.06f * l);
     v3 hipL = V(hip.x - 0.1f, hip.y, hip.d + 0.08f), hipR = V(hip.x + 0.1f, hip.y, hip.d - 0.08f);
-    v3 sh = V(hip.x + 0.03f, 1.42f - c * 1.2f, hip.d + 0.10f + l * 0.4f);
+    v3 sh = V(hip.x + 0.03f, hip.y + 0.52f * fcos(l), hip.d + 0.52f * fsin(l));
     v3 shL = V(sh.x - 0.17f, sh.y, sh.d + 0.1f), shR = V(sh.x + 0.18f, sh.y - 0.02f, sh.d - 0.08f);
-    v3 head = V(sh.x - 0.02f, sh.y + 0.26f, sh.d + 0.05f);
-    v3 kneeF = V(mixf(hipL.x, p.front.x, 0.5f) - 0.03f, 0.5f - c * 0.6f, mixf(hipL.d, p.front.d, 0.55f) + 0.06f);
-    v3 kneeB = V(mixf(hipR.x, p.back.x, 0.5f) + 0.03f, 0.5f - c * 0.6f, mixf(hipR.d, p.back.d, 0.5f) + 0.06f);
+    v3 head = V(sh.x - 0.02f, sh.y + 0.24f * fcos(l * 0.55f), sh.d + 0.24f * fsin(l * 0.55f) + 0.04f); /* looking down the pitch */
+    v3 kneeF = V(mixf(hipL.x, p.front.x, 0.5f) - 0.03f, 0.5f - c * 0.5f, mixf(hipL.d, p.front.d, 0.55f) + 0.06f + c * 0.5f);
+    v3 kneeB = V(mixf(hipR.x, p.back.x, 0.5f) + 0.03f, 0.5f - c * 0.5f, mixf(hipR.d, p.back.d, 0.5f) + 0.06f + c * 0.5f);
     /* floodlight shadows */
     float fx, fy;
     bp(V(hip.x, 0, hip.d), &fx, &fy);
