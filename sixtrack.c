@@ -1105,36 +1105,102 @@ static void result_banner(void) {
     if (k > 0.05f) text_shadow(cx, BANNER_Y - FONT_H * k / 2, g.banner, k, g.banner_col, a);
 }
 
-static const char *const menu_rows[4] = { "1 Over", "2 Overs", "5 Overs", "Quit" };
+/* ---- the screens' look: dark glassy cards with a gold edge, over the darkened stadium ---- */
 
-static void menu_screen(void) {
-    for (int i = 0; i < W * H; ++i) cv[i] = mixp(cv[i], RGB(4, 6, 16), 120);
-    text_shadow(CX, 34, "SIX TRACK", 2.2f, RGB(255, 214, 64), 1);
-    text_c(CX, 92, "Chase the target. 10 wickets.", 0.8f, RGB(200, 214, 240), 1);
-    for (int i = 0; i < 4; ++i) {
-        int y = 126 + i * 40;
-        if (i == g.sel) rrect((int)CX - 90, y - 4, 180, 34, 10, RGB(40, 84, 214), 0.95f);
-        else rrect((int)CX - 90, y - 4, 180, 34, 10, RGB(20, 26, 50), 0.7f);
-        text_c(CX, (float)y, menu_rows[i], 1, RGB(255, 255, 255), 1);
+#include "logo.h"
+#define GOLD RGB(255, 210, 74)
+#define INK2 RGB(170, 186, 220)
+
+/* A rounded card with a vertical gradient, c0 at the top to c1 at the bottom */
+static void grad_rrect(int x, int y, int w, int h, float r, u32 c0, u32 c1, float a) {
+    int bx0, by0, bx1, by1;
+    bounds((float)x, (float)y, (float)(x + w - 1), (float)(y + h - 1), &bx0, &by0, &bx1, &by1);
+    for (int py = by0; py < by1; ++py) {
+        u32 c = mixp(c0, c1, (u32)(256 * sat(((float)py - (float)y) / (float)h)));
+        for (int px = bx0; px < bx1; ++px) {
+            float qx = maxf(maxf((float)x + r - ((float)px + 0.5f), ((float)px + 0.5f) - (float)(x + w) + r), 0),
+                  qy = maxf(maxf((float)y + r - ((float)py + 0.5f), ((float)py + 0.5f) - (float)(y + h) + r), 0);
+            plot(px, py, c, a * sat(r + 0.5f - fsqrt(qx * qx + qy * qy)));
+        }
     }
-    text_c(CX, 294, "Wheel: choose   Centre: play   Hold Return: exit", 0.62f, RGB(170, 180, 205), 1);
 }
 
+/* A card: its gold edge and glow when picked, a dark glass face */
+static void ui_card(int x, int y, int w, int h, int picked, float a) {
+    if (picked) {
+        glow((float)x + (float)w / 2, (float)y + (float)h / 2, (float)maxf((float)w, (float)h) * 0.75f, RGB(255, 190, 60), 0.18f * a);
+        rrect(x - 2, y - 2, w + 4, h + 4, 12, GOLD, a);
+        grad_rrect(x, y, w, h, 10, RGB(46, 74, 160), RGB(16, 24, 60), a);
+    } else {
+        rrect(x - 1, y - 1, w + 2, h + 2, 11, RGB(70, 84, 120), 0.7f * a);
+        grad_rrect(x, y, w, h, 10, RGB(26, 34, 66), RGB(10, 14, 32), 0.92f * a);
+    }
+}
+
+/* The stadium behind a screen: darkened, deeper toward the edges */
+static void dim_scene(float k) {
+    for (int y = 0; y < H; ++y) {
+        float vy = ((float)y - H / 2.0f) / (H / 2.0f);
+        for (int x = 0; x < W; ++x) {
+            float vx = ((float)x - CX) / CX, v = sat(k + 0.25f * (vx * vx + vy * vy));
+            cv[y * W + x] = mixp(cv[y * W + x], RGB(4, 6, 16), (u32)(v * 256));
+        }
+    }
+}
+
+static void logo(int x, int y) {
+    for (int py = 0; py < LOGO_H; ++py)
+        for (int px = 0; px < LOGO_W; ++px) {
+            const unsigned char *c = logo_rgba + (py * LOGO_W + px) * 4;
+            if (c[3]) plot(x + px, y + py, RGB(c[0], c[1], c[2]), (float)c[3] * (1 / 255.0f));
+        }
+}
+
+/* The menu's cards: 1, 2 or 5 overs across, Quit under them */
+#define CARD_W 92
+#define CARD_H 112
+#define CARD_Y 108
+#define CARD_GAP 104
+#define QUIT_Y 238
+static int card_x(int i) { return (int)CX - CARD_W / 2 + (i - 1) * CARD_GAP; }
+
+static void menu_screen(void) {
+    dim_scene(0.45f);
+    logo((int)CX - LOGO_W / 2, 10);
+    text_c(CX, 80, "One-button cricket under the lights", 0.62f, RGB(214, 224, 246), 1);
+    for (int i = 0; i < 3; ++i) {
+        int picked = g.sel == i, x = card_x(i), y = CARD_Y - (picked ? 5 : 0);
+        char n[4];
+        puti(n, over_opts[i]);
+        ui_card(x, y, CARD_W, CARD_H, picked, 1);
+        text_shadow((float)x + CARD_W / 2.0f, (float)y + 8, n, 2.6f, picked ? GOLD : RGB(236, 240, 252), 1);
+        text_c((float)x + CARD_W / 2.0f, (float)y + 70, over_opts[i] == 1 ? "OVER" : "OVERS", 0.72f,
+               picked ? RGB(255, 255, 255) : INK2, 1);
+        text_c((float)x + CARD_W / 2.0f, (float)y + 90, "10 wickets", 0.5f, INK2, 0.9f);
+    }
+    int qp = g.sel == 3;
+    ui_card((int)CX - 50, QUIT_Y, 100, 28, qp, 1);
+    text_c(CX, (float)QUIT_Y + 3, "Quit", 0.8f, qp ? GOLD : INK2, 1);
+    text_c(CX, 282, "Wheel: choose  -  Centre: play", 0.56f, RGB(150, 164, 196), 1);
+}
+
+#define PAUSE_Y 150
 static void pause_screen(void) {
-    for (int i = 0; i < W * H; ++i) cv[i] = mixp(cv[i], RGB(4, 6, 16), 130);
-    panel((int)CX - 100, 96, 200, 130);
-    text_c(CX, 104, "Paused", 1.2f, RGB(255, 255, 255), 1);
+    dim_scene(0.5f);
+    ui_card((int)CX - 110, 84, 220, 148, 0, 1);
+    text_shadow(CX, 94, "PAUSED", 1.3f, GOLD, 1);
     static const char *const rows[2] = { "Resume", "Menu" };
     for (int i = 0; i < 2; ++i) {
-        int y = 146 + i * 38;
-        if (i == g.sel) rrect((int)CX - 80, y - 4, 160, 32, 9, RGB(40, 84, 214), 0.95f);
-        text_c(CX, (float)y, rows[i], 1, RGB(255, 255, 255), 1);
+        int y = PAUSE_Y + i * 38, picked = i == g.sel;
+        ui_card((int)CX - 80, y - 4, 160, 30, picked, 1);
+        text_c(CX, (float)y, rows[i], 0.9f, picked ? GOLD : RGB(236, 240, 252), 1);
     }
 }
 
 static void card_screen(void) {
     char s[64], *p;
-    for (int i = 0; i < W * H; ++i) cv[i] = mixp(cv[i], RGB(4, 6, 16), 238);
+    dim_scene(0.82f);
+    ui_card(28, 14, W - 56, 290, 0, 1);
     p = put(s, "Scorecard  "), p = puti(p, g.runs), p = put(p, "/"), p = puti(p, g.wkts), p = put(p, "  ("),
     p = puti(p, g.balls / 6), p = put(p, "."), p = puti(p, g.balls % 6), put(p, " ov)");
     text_c(CX, 30, s, 0.8f, RGB(255, 214, 64), 1);
@@ -1145,6 +1211,7 @@ static void card_screen(void) {
         const char *how = g.card[i].out == H_BOWLED ? "b" : g.card[i].out == H_BEHIND ? "c behind" : g.card[i].out == H_DEEP ? "c deep" : "not out";
         p = put(s, "#"), p = puti(p, g.lineup[i].num), put(p, g.lineup[i].left ? " L" : " R");
         u32 c = g.card[i].out ? RGB(200, 210, 230) : RGB(255, 255, 255);
+        if (shown & 1) grad_rrect(36, y - 1, W - 72, 17, 4, RGB(40, 54, 96), RGB(32, 44, 80), 0.55f); /* striped rows */
         text(46, (float)y, s, 0.58f, c, 1);
         text(112, (float)y, how, 0.58f, g.card[i].out ? RGB(236, 120, 120) : RGB(120, 220, 140), 1);
         p = puti(s, g.card[i].runs), p = put(p, " ("), p = puti(p, g.card[i].balls), put(p, ")");
@@ -1165,7 +1232,7 @@ static void card_screen(void) {
     p = put(s, "Best stand "), p = puti(p, g.best_stand), p = put(p, ": #"), p = puti(p, g.lineup[g.best_a].num),
     p = put(p, " & #"), puti(p, g.lineup[g.best_b].num);
     text_c(CX, (float)y + 4, s, 0.58f, RGB(255, 214, 64), 1);
-    text_c(CX, 292, "Centre: menu", 0.6f, RGB(255, 255, 255), 1);
+    text_c(CX, 284, "Centre: menu", 0.6f, GOLD, 1);
     (void)shown;
 }
 
@@ -1176,8 +1243,8 @@ static void end_screen(void) {
     }
     char s[48], *p;
     float a = sat(g.t * 3);
-    for (int i = 0; i < W * H; ++i) cv[i] = mixp(cv[i], RGB(4, 6, 16), (u32)(110 * a));
-    panel((int)CX - 140, 80, 280, 150);
+    dim_scene(0.45f * a);
+    ui_card((int)CX - 140, 74, 280, 160, g.won, a);
     if (g.won) {
         text_shadow(CX, 88, "YOU WON!", 1.8f, RGB(255, 214, 64), a);
         p = put(s, "by "), p = puti(p, WICKETS - g.wkts), p = put(p, WICKETS - g.wkts == 1 ? " wicket" : " wickets");
@@ -1192,7 +1259,7 @@ static void end_screen(void) {
     text_c(CX, 140, s, 0.9f, RGB(230, 236, 250), a);
     p = puti(s, g.runs), p = put(p, "/"), p = puti(p, g.wkts), p = put(p, " chasing "), puti(p, g.target);
     text_c(CX, 166, s, 0.8f, RGB(170, 186, 220), a);
-    text_c(CX, 198, "Centre: scorecard", 0.8f, RGB(255, 255, 255), a);
+    text_c(CX, 202, "Centre: scorecard", 0.7f, g.won ? GOLD : RGB(236, 240, 252), a);
 }
 
 /* This ball's timing area, very faint across the pitch: the good window, the middled one inside it, and
@@ -1292,13 +1359,13 @@ static void input(const char *m) {
     } else if (m[0] == 't' && m[2] == 'd') {
         const char *s = m + 3;
         int x = parse_int(&s), y = parse_int(&s);
-        (void)x;
         if (g.state == S_MENU) {
-            for (int i = 0; i < 4; ++i)
-                if (y >= 122 + i * 40 && y < 156 + i * 40) g.sel = i, choose();
+            for (int i = 0; i < 3; ++i)
+                if (x >= card_x(i) && x < card_x(i) + CARD_W && y >= CARD_Y - 6 && y < CARD_Y + CARD_H) g.sel = i, choose();
+            if (x >= (int)CX - 50 && x < (int)CX + 50 && y >= QUIT_Y - 2 && y < QUIT_Y + 30) g.sel = 3, choose();
         } else if (g.state == S_PAUSE) {
             for (int i = 0; i < 2; ++i)
-                if (y >= 142 + i * 38 && y < 174 + i * 38) g.sel = i, choose();
+                if (y >= PAUSE_Y - 6 + i * 38 && y < PAUSE_Y + 28 + i * 38) g.sel = i, choose();
         } else choose();
     } else if (m[0] == 'w') {
         const char *s = m + 1;
