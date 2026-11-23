@@ -235,7 +235,7 @@ static const u32 band_col[5] = { RGB(176, 96, 246), RGB(64, 150, 255), RGB(64, 2
                                  RGB(255, 140, 50) };
 static const u32 RED = RGB(236, 64, 64);
 
-enum { S_MENU, S_RUNUP, S_BALL, S_HIT, S_END, S_PAUSE };
+enum { S_MENU, S_RUNUP, S_BALL, S_HIT, S_END, S_PAUSE, S_COUNT };
 enum { H_NONE, H_RUNS, H_BOWLED, H_BEHIND, H_DEEP };
 
 typedef struct {
@@ -408,7 +408,9 @@ static void start_match(int overs) {
     (void)balls;
     g.banner_t = 0;
     g.bg_over = -1;
-    new_ball();
+    make_bg(0);
+    place_fielders();
+    g.swung = 0, g.state = S_COUNT, g.t = 0; /* 3, 2, 1, then the first ball */
 }
 
 /* The ball in flight at state time t: a projectile to its bounce, then off the pitch. */
@@ -529,6 +531,10 @@ static void step(float dt) {
     if (g.state == S_MENU || g.state == S_PAUSE) return;
     g.t += dt;
     if (g.state == S_END) return;
+    if (g.state == S_COUNT) {
+        if (g.t >= 3.4f) new_ball();
+        return;
+    }
     if (g.swung) g.swing_age += dt;
     if (g.state != S_RUNUP) g.ball_age += dt;
     if (g.state == S_RUNUP) {
@@ -784,7 +790,7 @@ static v3 vmix(v3 a, v3 b, float t) { return V(mixf(a.x, b.x, t), mixf(a.y, b.y,
 static float ease(float t) { t = sat(t); return t * t * (3 - 2 * t); }
 
 static v3 bat_anchor; /* the figure's feet: what it is scaled up about */
-#define BAT_BOOST 1.95f
+#define BAT_BOOST 2.1f
 static void bp(v3 p, float *sx, float *sy) {
     p.x *= hand(); /* a left-hander: the same figure, mirrored */
     v3 q = V(bat_anchor.x + (p.x - bat_anchor.x) * BAT_BOOST, (p.y) * BAT_BOOST,
@@ -796,6 +802,21 @@ static void limb(v3 a, v3 b, float r, u32 c) {
     float x0, y0, x1, y1;
     bp(a, &x0, &y0), bp(b, &x1, &y1);
     capsule(x0, y0, x1, y1, r * bk(), c, 1);
+}
+/* A rounded part lit by the floodlights from the upper left: its shade, its colour, a highlight. */
+static void slimb(v3 a, v3 b, float r, u32 c) {
+    float x0, y0, x1, y1, R = r * bk();
+    bp(a, &x0, &y0), bp(b, &x1, &y1);
+    capsule(x0, y0, x1, y1, R, shade(c, 0.72f), 1);
+    capsule(x0 - R * 0.22f, y0 - R * 0.12f, x1 - R * 0.22f, y1 - R * 0.12f, R * 0.72f, c, 1);
+    capsule(x0 - R * 0.45f, y0 - R * 0.2f, x1 - R * 0.45f, y1 - R * 0.2f, R * 0.22f, shade(c, 1.3f), 0.55f);
+}
+static void sblob(v3 a, float r, u32 c) {
+    float x, y, R = r * bk();
+    bp(a, &x, &y);
+    disc(x, y, R, shade(c, 0.72f), 1);
+    disc(x - R * 0.2f, y - R * 0.18f, R * 0.75f, c, 1);
+    disc(x - R * 0.38f, y - R * 0.4f, R * 0.25f, shade(c, 1.5f), 0.6f);
 }
 static void blob(v3 a, float r, u32 c) {
     float x, y;
@@ -836,7 +857,7 @@ static pose with_feet(pose p, int full, int shortb) { /* footwork: forward to a 
 }
 
 static pose batter_pose(void) {
-    if (g.state == S_MENU || g.state == S_END) return STANCE;
+    if (g.state == S_MENU || g.state == S_END || g.state == S_COUNT) return STANCE;
     if (g.state == S_RUNUP) { /* back to the stance, the bat tapped as the bowler runs in */
         pose p = STANCE;
         float tap = fsin(g.t * 9) * 0.5f + 0.5f;
@@ -860,31 +881,65 @@ static pose batter_pose(void) {
     return p;
 }
 
+static v3 vlerp(v3 a, v3 b, float t) { return vmix(a, b, t); }
+static v3 vadd(v3 a, float x, float y, float d) { return V(a.x + x, a.y + y, a.d + d); }
+
+/* A leg: the trouser thigh, then the pad over knee and shin (its ridges, the knee roll, straps), the shoe */
+static void leg(v3 hipj, v3 knee, v3 foot, u32 trouser) {
+    const u32 PAD = RGB(246, 246, 240), RIDGE = RGB(196, 198, 206);
+    slimb(hipj, knee, 0.105f, trouser);
+    v3 top = vlerp(hipj, knee, 0.75f), ankle = vadd(foot, 0, 0.08f, 0);
+    slimb(top, ankle, 0.088f, PAD);
+    for (int i = -1; i <= 1; ++i) /* the pad's ridges */
+        limb(vadd(top, 0.035f * (float)i, -0.02f, -0.02f), vadd(ankle, 0.03f * (float)i, 0.03f, -0.02f), 0.007f, RIDGE);
+    sblob(knee, 0.1f, PAD);                                                 /* the knee roll */
+    for (int k = 1; k <= 2; ++k) {                                          /* straps */
+        v3 m = vlerp(knee, ankle, 0.33f * (float)k);
+        limb(vadd(m, -0.08f, 0, -0.03f), vadd(m, 0.08f, 0, -0.03f), 0.012f, RGB(60, 62, 70));
+    }
+    slimb(vadd(foot, 0.02f, 0.04f, -0.06f), vadd(foot, -0.02f, 0.04f, 0.12f), 0.055f, RGB(250, 250, 250)); /* shoe */
+    limb(vadd(foot, 0.02f, 0.0f, -0.06f), vadd(foot, -0.02f, 0.0f, 0.12f), 0.018f, RGB(60, 60, 66));          /* its sole */
+}
+
+/* An arm: a short sleeve, the bare forearm, a glove at the hand */
+static void arm(v3 shoulder, v3 elbow, v3 hand, u32 kit, u32 skin) {
+    v3 cuff = vlerp(shoulder, elbow, 0.62f);
+    slimb(shoulder, cuff, 0.068f, kit);
+    slimb(cuff, elbow, 0.05f, skin);
+    slimb(elbow, hand, 0.047f, skin);
+}
+
+static void glove(v3 at) {
+    sblob(at, 0.07f, RGB(250, 250, 250));
+    for (int i = -1; i <= 1; ++i) /* finger rolls */
+        limb(vadd(at, -0.05f, 0.025f * (float)i, 0), vadd(at, 0.05f, 0.025f * (float)i, 0), 0.006f, RGB(186, 190, 200));
+}
+
 static void batter(void) {
     pose p = batter_pose();
     bat_anchor = V(0.62f * hand(), 0, 0.25f);
-    const u32 KIT = BATTING.shirt, TROUSER = shade(BATTING.shirt, 0.7f), PAD = RGB(246, 246, 240), GLOVE = RGB(250, 250, 250);
+    const u32 KIT = BATTING.shirt, TROUSER = shade(BATTING.shirt, 0.8f), SKIN = BATTING.skin;
     float c = p.crouch, l = p.lean;
     /* hips and shoulders, side-on: the left (toward the bowler) and the right (toward us) */
-    v3 hip = V(mixf(p.back.x, p.front.x, 0.45f) + 0.02f, 0.90f - c, mixf(p.back.d, p.front.d, 0.45f));
+    v3 hip = V(mixf(p.back.x, p.front.x, 0.45f) + 0.02f, 0.92f - c, mixf(p.back.d, p.front.d, 0.45f));
     v3 hipL = V(hip.x - 0.1f, hip.y, hip.d + 0.08f), hipR = V(hip.x + 0.1f, hip.y, hip.d - 0.08f);
-    v3 sh = V(hip.x + 0.03f, 1.40f - c * 1.2f, hip.d + 0.10f + l * 0.4f);
-    v3 shL = V(sh.x - 0.15f, sh.y, sh.d + 0.1f), shR = V(sh.x + 0.16f, sh.y - 0.02f, sh.d - 0.08f);
-    v3 head = V(sh.x - 0.02f, sh.y + 0.24f, sh.d + 0.05f);
-    v3 kneeF = V(mixf(hipL.x, p.front.x, 0.5f) - 0.03f, 0.48f - c * 0.6f, mixf(hipL.d, p.front.d, 0.55f) + 0.06f);
-    v3 kneeB = V(mixf(hipR.x, p.back.x, 0.5f) + 0.03f, 0.48f - c * 0.6f, mixf(hipR.d, p.back.d, 0.5f) + 0.06f);
+    v3 sh = V(hip.x + 0.03f, 1.42f - c * 1.2f, hip.d + 0.10f + l * 0.4f);
+    v3 shL = V(sh.x - 0.17f, sh.y, sh.d + 0.1f), shR = V(sh.x + 0.18f, sh.y - 0.02f, sh.d - 0.08f);
+    v3 head = V(sh.x - 0.02f, sh.y + 0.26f, sh.d + 0.05f);
+    v3 kneeF = V(mixf(hipL.x, p.front.x, 0.5f) - 0.03f, 0.5f - c * 0.6f, mixf(hipL.d, p.front.d, 0.55f) + 0.06f);
+    v3 kneeB = V(mixf(hipR.x, p.back.x, 0.5f) + 0.03f, 0.5f - c * 0.6f, mixf(hipR.d, p.back.d, 0.5f) + 0.06f);
     /* floodlight shadows */
     float fx, fy;
     bp(V(hip.x, 0, hip.d), &fx, &fy);
     for (int i = 0; i < 4; ++i)
         ellipse(fx + (i & 1 ? 1 : -1) * 0.55f * bk(), fy + (i & 2 ? 0.05f : -0.03f) * bk(), 0.7f * bk(), 0.09f * bk(), RGB(0, 0, 0), 0.12f);
-    /* the front leg, then the body, then the near (back) leg */
-    limb(hipL, kneeF, 0.1f, TROUSER);
-    limb(kneeF, p.front, 0.085f, PAD), blob(kneeF, 0.095f, PAD);
-    limb(p.front, V(p.front.x - 0.02f, 0.03f, p.front.d + 0.12f), 0.05f, RGB(250, 250, 250)); /* shoe */
-    limb(hip, sh, 0.2f, KIT);
-    limb(shL, shR, 0.1f, KIT);
-    limb(V(shL.x, shL.y + 0.05f, shL.d), V(shR.x, shR.y + 0.05f, shR.d), 0.025f, BATTING.trim); /* the shoulders' trim */
+    /* the front leg, the body, the near (back) leg */
+    leg(hipL, kneeF, p.front, TROUSER);
+    slimb(hip, sh, 0.19f, KIT);                                 /* the torso: a V, broad at the shoulders */
+    slimb(hipL, shL, 0.11f, KIT), slimb(hipR, shR, 0.11f, KIT);
+    slimb(shL, shR, 0.1f, KIT);
+    slimb(hipL, hipR, 0.12f, TROUSER);                          /* the waist */
+    limb(V(shL.x, shL.y + 0.06f, shL.d), V(shR.x, shR.y + 0.06f, shR.d), 0.025f, BATTING.trim); /* the shoulders' trim */
     { /* the shirt number, across the back */
         char n[4];
         puti(n, g.lineup[batter_in()].num);
@@ -894,9 +949,7 @@ static void batter(void) {
         text_c(nx + 0.7f, ny - FONT_H * k / 2 + 0.7f, n, k, RGB(10, 20, 60), 0.8f);
         text_c(nx, ny - FONT_H * k / 2, n, k, BATTING.trim, 1);
     }
-    limb(hipR, kneeB, 0.105f, TROUSER);
-    limb(kneeB, p.back, 0.09f, PAD), blob(kneeB, 0.1f, PAD);
-    limb(p.back, V(p.back.x - 0.02f, 0.03f, p.back.d + 0.12f), 0.055f, RGB(250, 250, 250));
+    leg(hipR, kneeB, p.back, TROUSER);
     /* the bat: the top hand (the left) at the top of the handle, the bottom hand just under it; the
      * far (left) arm, then the bat, then the near (right) arm over it */
     v3 top = p.hands, dir = V(p.toe.x - top.x, p.toe.y - top.y, p.toe.d - top.d);
@@ -904,25 +957,30 @@ static void batter(void) {
     if (len < 0.01f) len = 0.01f;
     v3 u = V(dir.x / len, dir.y / len, dir.d / len);
 #define ALONG(t) V(top.x + u.x * (t), top.y + u.y * (t), top.d + u.d * (t))
-    v3 low = ALONG(0.12f), handle_top = ALONG(-0.05f), splice = ALONG(0.28f), toe = ALONG(0.86f);
+    v3 low = ALONG(0.12f), handle_top = ALONG(-0.06f), splice = ALONG(0.28f), toe = ALONG(0.86f);
     v3 elbowL = V(mixf(shL.x, top.x, 0.5f) - 0.02f, mixf(shL.y, top.y, 0.5f) + 0.02f, mixf(shL.d, top.d, 0.5f) + 0.1f); /* the front elbow up */
     v3 elbowR = V(mixf(shR.x, low.x, 0.5f) + 0.07f, mixf(shR.y, low.y, 0.5f) - 0.05f, mixf(shR.d, low.d, 0.5f) - 0.05f);
-    limb(shL, elbowL, 0.062f, KIT), limb(elbowL, top, 0.055f, KIT);
-    limb(handle_top, splice, 0.022f, RGB(36, 36, 40));                    /* the handle's rubber grip */
-    limb(splice, toe, 0.06f, RGB(198, 154, 96));                           /* the blade */
-    limb(ALONG(0.32f), ALONG(0.84f), 0.02f, RGB(228, 192, 140));            /* its edge, catching the light */
-    blob(top, 0.062f, GLOVE);
-    limb(shR, elbowR, 0.065f, KIT), limb(elbowR, low, 0.058f, KIT);
-    blob(low, 0.064f, GLOVE);
-    limb(top, low, 0.05f, GLOVE);
+    arm(shL, elbowL, top, KIT, SKIN);
+    limb(handle_top, splice, 0.024f, RGB(36, 36, 40));                          /* the handle's rubber grip */
+    for (int k = 0; k < 4; ++k)                                                 /* the blade, wider toward the toe */
+        slimb(ALONG(0.28f + 0.145f * (float)k), ALONG(0.28f + 0.145f * (float)(k + 1)), 0.045f + 0.006f * (float)k,
+              RGB(206, 162, 104));
+    limb(ALONG(0.31f), ALONG(0.4f), 0.05f, RGB(30, 70, 200));                    /* the maker's band */
+    limb(ALONG(0.42f), ALONG(0.84f), 0.012f, RGB(240, 214, 170));                /* the edge, catching the light */
+    limb(ALONG(0.83f), toe, 0.06f, RGB(150, 112, 70));                          /* the toe */
+    glove(top);
+    arm(shR, elbowR, low, KIT, SKIN);
+    glove(low);
 #undef ALONG
-    /* the helmet: its peak down the pitch, the neck guard toward us */
-    blob(V(head.x, head.y - 0.14f, head.d - 0.02f), 0.05f, BATTING.skin);
-    blob(head, 0.14f, BATTING.cap);
-    limb(V(head.x, head.y - 0.02f, head.d + 0.06f), V(head.x - 0.02f, head.y - 0.04f, head.d + 0.2f), 0.04f, BATTING.cap); /* peak */
-    limb(V(head.x - 0.03f, head.y - 0.06f, head.d + 0.12f), V(head.x - 0.03f, head.y - 0.16f, head.d + 0.14f), 0.015f, RGB(160, 160, 170)); /* grille */
-    limb(V(head.x + 0.05f, head.y - 0.1f, head.d - 0.08f), V(head.x - 0.02f, head.y - 0.12f, head.d - 0.12f), 0.035f, BATTING.cap); /* neck guard */
-    blob(V(head.x + 0.08f, head.y + 0.02f, head.d - 0.02f), 0.025f, BATTING.trim); /* badge */
+    /* the helmet: its peak down the pitch, side flaps, the grille, the neck guard toward us */
+    slimb(vadd(head, 0, -0.2f, -0.02f), vadd(head, 0, -0.1f, -0.02f), 0.05f, SKIN); /* neck */
+    sblob(head, 0.145f, BATTING.cap);
+    slimb(vadd(head, 0, -0.02f, 0.06f), vadd(head, -0.02f, -0.05f, 0.22f), 0.04f, BATTING.cap); /* the peak */
+    slimb(vadd(head, 0.02f, -0.06f, 0.16f), vadd(head, 0.04f, -0.16f, 0.15f), 0.018f, RGB(170, 172, 182)); /* the grille's edge, just seen */
+    sblob(vadd(head, 0.1f, -0.06f, 0.02f), 0.045f, BATTING.cap);              /* the side flap over the ear */
+    slimb(vadd(head, 0.05f, -0.11f, -0.08f), vadd(head, -0.02f, -0.13f, -0.12f), 0.035f, BATTING.cap); /* neck guard */
+    limb(vadd(head, -0.12f, 0.02f, 0), vadd(head, 0.12f, 0.02f, 0), 0.012f, BATTING.trim);              /* its band */
+    blob(vadd(head, 0.09f, 0.03f, -0.02f), 0.025f, BATTING.trim);              /* badge */
 }
 
 static void stumps(void) {
@@ -990,6 +1048,7 @@ static void people(void) {
     if (g.state == S_RUNUP) bd = mixf(g.runup < 1 ? 24 : 30, RELEASE_D + 0.6f, sat(g.t / g.runup)), bpose = P_RUN, ph = g.t * 14;
     else if (g.state == S_BALL) bd = RELEASE_D + 0.6f - minf(g.t, 0.4f) * 3, bpose = g.t < 0.25f ? P_BOWL : P_RUN,
                                 ph = g.t < 0.25f ? PI + g.t * 12 : g.t * 10;
+    else if (g.state == S_COUNT) bd = 30; /* at the top of his run */
     else bd = RELEASE_D - 0.6f;
     for (int n = 0; n < FIELDERS; ++n) {
         fielder *f = &g.f[order[n]];
@@ -1157,7 +1216,15 @@ static void render(void) {
     }
     hud();
     result_banner();
-    if (g.state == S_RUNUP && g.balls == 0)
+    if (g.state == S_COUNT) { /* 3, 2, 1, PLAY! */
+        int n = 3 - (int)(g.t / 0.85f);
+        float f = g.t - 0.85f * (float)(3 - n), pop = 1 + 0.6f * sat(1 - f * 5), a = sat((0.85f - f) * 4);
+        char s[8];
+        if (n > 0) puti(s, n);
+        else put(s, "PLAY!"), a = sat((3.4f - g.t) * 4);
+        text_shadow(CX, 104 - FONT_H * 2.6f * pop / 2, s, 2.6f * pop, n > 0 ? RGB(255, 255, 255) : RGB(255, 214, 64), a);
+    }
+    if ((g.state == S_RUNUP && g.balls == 0) || g.state == S_COUNT)
         text_shadow(CX, 230, "Centre or tap to swing", 0.8f, RGB(255, 255, 255), sat(1.2f - g.t));
     if (g.state == S_PAUSE) pause_screen();
     if (g.state == S_END) end_screen();
@@ -1194,7 +1261,7 @@ static void input(const char *m) {
         int code = parse_int(&s);
         if (code == KEY_CENTER) choose();
         else if (code == KEY_RETURN) {
-            if (g.state == S_RUNUP || g.state == S_BALL || g.state == S_HIT) g.paused_from = g.state, g.state = S_PAUSE, g.sel = 0;
+            if (g.state == S_RUNUP || g.state == S_BALL || g.state == S_HIT || g.state == S_COUNT) g.paused_from = g.state, g.state = S_PAUSE, g.sel = 0;
             else if (g.state == S_PAUSE) g.state = g.paused_from;
         }
     } else if (m[0] == 't' && m[2] == 'd') {
