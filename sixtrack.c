@@ -398,11 +398,14 @@ static void start_match(int overs) {
     g.overs = overs, g.runs = g.wkts = g.balls = 0;
     pick_lineup();
     g.attack = 0.75f + frand() * 0.55f, g.bnum = 0; /* the match's attack: gentle to fiery */
+    /* the target: anything from 6 to 15 an over, a little lower against a fiery attack */
+    float rpo = (6 + frand() * 9) * mixf(1.08f, 0.92f, (g.attack - 0.75f) / 0.55f);
+    g.target = (int)((float)overs * rpo + 0.5f) + 1;
     for (int i = 0; i <= WICKETS; ++i) g.card[i].runs = g.card[i].balls = g.card[i].fours = g.card[i].sixes = g.card[i].out = 0;
     g.striker = 0, g.other = 1, g.next_in = 2, g.page = 0;
     g.stand = g.best_stand = 0, g.best_a = 0, g.best_b = 1;
     int balls = overs * 6;
-    g.target = balls + (int)((float)balls * (0.45f + frand() * 0.4f)) + 1; /* about 1.5 to 1.9 a ball */
+    (void)balls;
     g.banner_t = 0;
     g.bg_over = -1;
     new_ball();
