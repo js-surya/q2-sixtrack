@@ -709,7 +709,7 @@ static v3 vmix(v3 a, v3 b, float t) { return V(mixf(a.x, b.x, t), mixf(a.y, b.y,
 static float ease(float t) { t = sat(t); return t * t * (3 - 2 * t); }
 
 static v3 bat_anchor; /* the figure's feet: what it is scaled up about */
-#define BAT_BOOST 1.65f
+#define BAT_BOOST 1.95f
 static void bp(v3 p, float *sx, float *sy) {
     v3 q = V(bat_anchor.x + (p.x - bat_anchor.x) * BAT_BOOST, (p.y) * BAT_BOOST,
              bat_anchor.d + (p.d - bat_anchor.d) * BAT_BOOST);
@@ -895,7 +895,7 @@ static void people(void) {
         if (g.how == H_RUNS) pose = g.got == 6 ? P_SIX : g.got == 4 ? P_FOUR : P_IDLE;
         else pose = P_OUT;
     }
-    figure(-0.8f, 22.4f, 1.5f, &UMPIRE, pose, g.clock);
+    figure(-0.8f, 22.4f, 2.5f, &UMPIRE, pose, g.clock);
     float bd = 30, ph = 0;
     int bpose = P_IDLE;
     if (g.state == S_RUNUP) bd = mixf(g.runup < 1 ? 24 : 30, RELEASE_D + 0.6f, sat(g.t / g.runup)), bpose = P_RUN, ph = g.t * 14;
@@ -906,15 +906,15 @@ static void people(void) {
         fielder *f = &g.f[order[n]];
         if (f->d < bd) break;
         int moving = absf(f->x - f->tx) + absf(f->d - f->td) > 0.05f;
-        figure(f->x, f->d, 1.7f, &FIELDING, f->caught ? P_CATCH : moving ? P_RUN : P_IDLE, g.clock * 12);
+        figure(f->x, f->d, 3.0f, &FIELDING, f->caught ? P_CATCH : moving ? P_RUN : P_IDLE, g.clock * 12);
     }
-    figure(0.55f, bd, 1.5f, &FIELDING, bpose, ph);
+    figure(0.55f, bd, 2.5f, &FIELDING, bpose, ph);
     for (int n = 0; n < FIELDERS; ++n) {
         fielder *f = &g.f[order[n]];
         if (f->d >= bd) continue;
         if (f->d + CAM_C < 3) continue;
         int moving = absf(f->x - f->tx) + absf(f->d - f->td) > 0.05f;
-        figure(f->x, f->d, 1.5f, &FIELDING, f->caught ? P_CATCH : moving ? P_RUN : P_IDLE, g.clock * 12);
+        figure(f->x, f->d, 2.4f, &FIELDING, f->caught ? P_CATCH : moving ? P_RUN : P_IDLE, g.clock * 12);
     }
 }
 
