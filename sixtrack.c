@@ -218,6 +218,7 @@ static char *puti(char *p, int v) {
 #define STUMPS_D (-1.2f)
 #define RELEASE_D 20.0f
 #define BAT_X 0.62f
+#define BAT_GUARD 0.42f /* the batter stands this far to the off side of where he is modelled: the stumps clear beside him */
 #define STRIP_X (-0.3f) /* the strip's middle: left of the batter, under the ball's line */
 /* The strip, early to late: a red end, five bands of BAND_W, a red end. */
 #ifndef SHOW_STRIP
@@ -910,6 +911,7 @@ static void bp(v3 p, float *sx, float *sy) {
         float phi = BAT_TURN * hand(), cs = fcos(phi), sn = fsin(phi), dx = p.x - bat_anchor.x, dd = p.d - bat_anchor.d;
         p.x = bat_anchor.x + dx * cs + dd * sn, p.d = bat_anchor.d - dx * sn + dd * cs;
     }
+    p.x += BAT_GUARD * hand();
     v3 q = V(bat_anchor.x + (p.x - bat_anchor.x) * BAT_BOOST, (p.y) * BAT_BOOST,
              bat_anchor.d + (p.d - bat_anchor.d) * BAT_BOOST);
     proj(q.x, q.y, q.d, sx, sy);
@@ -1036,7 +1038,7 @@ static void glove(v3 at) {
 
 static void batter(void) {
     pose p = batter_pose();
-    bat_anchor = V(0.62f * hand(), 0, 0.25f);
+    bat_anchor = V((0.62f + BAT_GUARD) * hand(), 0, 0.25f);
     const u32 KIT = BATTING.shirt, TROUSER = shade(BATTING.shirt, 0.8f), SKIN = BATTING.skin;
     float c = p.crouch, l = p.lean;
     /* hips and shoulders, side-on: the left (toward the bowler) and the right (toward us) */
