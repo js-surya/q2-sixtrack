@@ -1240,11 +1240,23 @@ static void timing_area(void) {
     for (int y = 97; y < H; ++y) {
         float d = ground_d((float)y + 0.5f), off = absf(d - g.d_ideal);
         if (off > good) continue;
-        float a = (off < 0.03f * g.v ? 0.2f : off < mid ? 0.12f : 0.06f * (1 - off / good) + 0.02f) * fade;
-        float s = scale_at(d), hw = 1.4f * s;
+        float a = (off < 0.03f * g.v ? 0.22f : off < mid ? 0.13f : 0.07f * (1 - off / good) + 0.03f) * fade;
+        float s = scale_at(d), hw = 3.2f * s; /* across the grass both sides: the batter hides the pitch there */
         for (int x = (int)(CX - hw); x <= (int)(CX + hw); ++x)
             plot(x, y, RGB(255, 246, 220), a * sat(hw + 0.5f - absf((float)x + 0.5f - CX)) * sat((hw - absf((float)x + 0.5f - CX)) / (0.25f * hw)));
     }
+}
+
+/* The perfect line's ends, beside the pitch, over everything: two small soft ticks the batter can't hide */
+static void timing_ticks(void) {
+    if (g.state != S_BALL && g.state != S_RUNUP) return;
+    float fade = g.state == S_RUNUP ? sat((g.t - (g.runup - 0.5f)) * 3) : g.swung ? sat(1 - (g.t - g.swing_t) * 5) : 1;
+    if (fade <= 0) return;
+    float x0, y0, x1, y1;
+    proj(-2.0f, 0, g.d_ideal, &x0, &y0), proj(-1.6f, 0, g.d_ideal, &x1, &y1);
+    capsule(x0, y0, x1, y1, 1.1f, RGB(255, 246, 220), 0.55f * fade);
+    proj(1.6f, 0, g.d_ideal, &x0, &y0), proj(2.0f, 0, g.d_ideal, &x1, &y1);
+    capsule(x0, y0, x1, y1, 1.1f, RGB(255, 246, 220), 0.55f * fade);
 }
 
 static void render(void) {
@@ -1255,6 +1267,7 @@ static void render(void) {
     ball();
     batter();
     stumps();
+    timing_ticks();
     if (g.state == S_MENU) {
         menu_screen();
         return;
