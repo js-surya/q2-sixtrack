@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-50 -40 300 340" width="300" height="340">
+  <defs>
+    <linearGradient id="shirt" x1="0" y1="0" x2="1" y2="0.3">
+      <stop offset="0" stop-color="#5A86F4"/><stop offset="0.55" stop-color="#2E5BDA"/><stop offset="1" stop-color="#1B3A9C"/>
+    </linearGradient>
+    <linearGradient id="trouser" x1="0" y1="0" x2="1" y2="0.2">
+      <stop offset="0" stop-color="#3D63CC"/><stop offset="0.6" stop-color="#2546AE"/><stop offset="1" stop-color="#172F7C"/>
+    </linearGradient>
+    <linearGradient id="pad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFFFFF"/><stop offset="0.6" stop-color="#EEEEE8"/><stop offset="1" stop-color="#BFC3CF"/>
+    </linearGradient>
+    <linearGradient id="skin" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#E0AC84"/><stop offset="1" stop-color="#A9744F"/>
+    </linearGradient>
+    <radialGradient id="helmet" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#4A63B8"/><stop offset="0.45" stop-color="#1B2A6A"/><stop offset="1" stop-color="#0E1640"/>
+    </radialGradient>
+    <linearGradient id="wood" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#F0C890"/><stop offset="0.5" stop-color="#D9A464"/><stop offset="1" stop-color="#A87438"/>
+    </linearGradient>
+    <linearGradient id="glove" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#C8CCD8"/>
+    </linearGradient>
+  </defs>
+  <g stroke="#101833" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round">
+<ellipse cx="104" cy="284" rx="58" ry="9" fill="#000" fill-opacity="0.22" stroke="none"/>
+<path d="M106.9 118.8 L119.0 123.3 A5.8 5.8 0 0 0 123.5 112.6 L111.9 107.0 A6.4 6.4 0 0 0 106.9 118.8 Z" fill="url(#skin)"/><path d="M115.4 119.5 L125.6 151.8 A4.8 4.8 0 0 0 134.8 149.2 L127.0 116.3 A6.0 6.0 0 0 0 115.4 119.5 Z" fill="url(#skin)"/><path d="M86.4 113.5 L106.3 120.3 A8.0 8.0 0 0 0 112.5 105.5 L93.8 96.0 A9.5 9.5 0 0 0 86.4 113.5 Z" fill="url(#shirt)"/>
+
+    <path d="M86 160 Q76 186 84 208 L98 206 Q102 184 104 166 Z" fill="url(#trouser)"/>
+    <path d="M78 204 Q74 232 77 252 L91 254 Q96 230 96 204 Q88 199 78 204 Z" fill="url(#pad)"/>
+    <path d="M81 210 L80 248 M87 208 L87 250" stroke="#B8BCC8" stroke-width="1.4" fill="none"/>
+    <path d="M78 222 L96 222 M77 238 L94 238" stroke="#3A3E4C" stroke-width="2.4" fill="none"/>
+    <ellipse cx="87" cy="205" rx="10" ry="7" fill="url(#pad)"/>
+    <path d="M70 252 Q68 262 76 264 L96 264 Q99 258 93 251 Z" fill="#F7F7F7"/>
+    <path d="M70 263 L97 263" stroke="#2A2C36" stroke-width="2.6"/>
+
+    <path d="M88 150 Q80 166 86 180 Q100 192 122 186 Q138 180 136 160 Q120 146 88 150 Z" fill="url(#trouser)"/>
+    <path d="M104 156 Q108 172 104 186" stroke="#162C70" stroke-width="1.4" fill="none"/>
+
+    <path d="M116 176 Q130 194 132 216 L118 220 Q108 200 104 182 Z" fill="url(#trouser)"/>
+    <path d="M114 214 Q112 246 116 272 L132 272 Q136 244 134 214 Q124 209 114 214 Z" fill="url(#pad)"/>
+    <path d="M119 220 L120 266 M125 219 L127 267" stroke="#B8BCC8" stroke-width="1.4" fill="none"/>
+    <path d="M114 232 L134 232 M114 252 L134 252" stroke="#3A3E4C" stroke-width="2.4" fill="none"/>
+    <ellipse cx="124" cy="216" rx="11" ry="8" fill="url(#pad)"/>
+    <path d="M110 272 Q107 284 116 286 L140 286 Q144 279 136 271 Z" fill="#F7F7F7"/>
+    <path d="M109 285 L141 285" stroke="#2A2C36" stroke-width="2.8"/>
+<g transform="rotate(-2 112 158)">
+    <path d="M86 152 Q78 124 86 104 Q100 88 126 92 Q148 98 150 116 Q148 140 138 158 Q114 164 86 152 Z" fill="url(#shirt)"/>
+    <path d="M98 110 Q112 120 128 112" stroke="#1C3A9A" stroke-width="1.4" fill="none"/>
+    <path d="M100 140 Q116 146 132 140" stroke="#1C3A9A" stroke-width="1.4" fill="none"/>
+    <path d="M88 104 Q104 96 120 98" stroke="#F5C030" stroke-width="3.2" fill="none"/>
+    <path d="M128 96 Q142 100 148 110" stroke="#F5C030" stroke-width="3.2" fill="none"/>
+    <text x="113" y="138" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-weight="bold" font-size="22"
+          fill="#F5C030" stroke="#101833" stroke-width="1.2"></text><g transform="rotate(0 112 92)">
+    <path d="M104 92 Q108 82 118 82 Q124 86 122 94 Z" fill="url(#skin)"/>
+    <path d="M90 72 Q90 48 112 46 Q134 46 136 68 Q136 84 120 88 Q98 90 90 72 Z" fill="url(#helmet)"/>
+    <path d="M94 76 Q110 92 130 82 L132 88 Q112 100 92 84 Z" fill="#14205A"/>
+    <path d="M92 66 Q112 72 134 64" stroke="#F5C030" stroke-width="3" fill="none"/>
+    <path d="M134 56 Q146 58 148 70 L140 72" fill="#1B2A6A"/>
+    <path d="M140 64 L146 78 M136 70 L142 82" stroke="#A8ACB8" stroke-width="1.6" fill="none"/>
+    <ellipse cx="104" cy="56" rx="7" ry="4" fill="#FFFFFF" fill-opacity="0.25" stroke="none"/></g></g>
+
+    <g transform="translate(138.0 146.0) rotate(-120.0)">
+      <path d="M-3.2 -10 L3.2 -10 L3.2 24 L-3.2 24 Z" fill="#26262C"/>
+      <path d="M-6.5 22 L6.5 22 L7.8 96 Q7.8 104 1.5 104 L-1.5 104 Q-7.8 104 -7.8 96 Z" fill="url(#wood)"/>
+      <path d="M-4 30 L-5 98" stroke="#F6DDB0" stroke-width="1.6" fill="none"/>
+      <path d="M-6.8 28 L6.8 28 L7 37 L-7 37 Z" fill="#2E5BDA" stroke-width="1.4"/>
+      <path d="M-7.6 97 Q-7.6 104 -1.5 104 L1.5 104 Q7.6 104 7.6 97" fill="none" stroke="#8A5C2A" stroke-width="2"/>
+    </g>
+
+    <g transform="translate(130.2 150.5) rotate(-120.0)">
+      <path d="M-8 -6 Q-9 6 -2 9 Q8 10 9 2 Q10 -7 1 -8 Q-6 -9 -8 -6 Z" fill="url(#glove)"/>
+      <path d="M-6 -2 L7 -2 M-6 3 L7 3" stroke="#AEB3C2" stroke-width="1.2" fill="none"/>
+    </g>
+<path d="M122.0 112.1 L113.7 119.9 A5.8 5.8 0 0 0 121.3 128.8 L130.3 121.9 A6.4 6.4 0 0 0 122.0 112.1 Z" fill="url(#skin)"/><path d="M113.1 128.5 L134.5 149.3 A4.8 4.8 0 0 0 141.5 142.7 L121.8 120.2 A6.0 6.0 0 0 0 113.1 128.5 Z" fill="url(#skin)"/><path d="M134.0 97.8 L120.9 110.9 A8.0 8.0 0 0 0 131.3 123.1 L146.3 112.2 A9.5 9.5 0 0 0 134.0 97.8 Z" fill="url(#shirt)"/>
+
+    <g transform="translate(138.0 146.0) rotate(-120.0)">
+      <path d="M-8 -6 Q-9 6 -2 9 Q8 10 9 2 Q10 -7 1 -8 Q-6 -9 -8 -6 Z" fill="url(#glove)"/>
+      <path d="M-6 -2 L7 -2 M-6 3 L7 3" stroke="#AEB3C2" stroke-width="1.2" fill="none"/>
+    </g>
+  </g>
+</svg>
