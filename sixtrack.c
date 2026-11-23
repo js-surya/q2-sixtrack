@@ -278,6 +278,9 @@ static struct {
     struct { int runs, balls, fours, sixes, out; } card[WICKETS + 1]; /* out: 0 not out, else a H_ code */
     int striker, other, next_in, page;
     int stand, best_stand, best_a, best_b;
+    /* the bowling: the attack's level for the match, and this over's bowler */
+    float attack, skill;
+    int btype, bnum; /* 0 fast, 1 medium, 2 spin; the shirt number */
     float wheel;
 } g;
 
@@ -313,6 +316,7 @@ static void place_fielders(void) {
 }
 
 static void make_bg(int over);
+static void banner(const char *s, u32 c);
 
 /* Every ball its own: pace, length, line, swing and movement off the pitch drawn at random, then
  * flown as a projectile that bounces, so it can only be timed by watching it. The game runs in slow
@@ -323,19 +327,21 @@ static float spread(void) { return frand() + frand() - 1; } /* -1..1, most near 
 
 static void pick_delivery(void) {
     float p = (float)g.balls / (float)(g.overs * 6); /* how far through the match */
-    g.spin = frand() < mixf(0.06f, 0.28f, p);
+    g.spin = g.btype == 2;
+    (void)p;
     float v, bounce_d, e, Xt = spread() * 0.2f; /* Xt: where it would cross the stumps' line */
     g.X0 = 0.3f * hand() + spread() * 0.15f, g.Y0 = 2.1f + spread() * 0.12f, g.G = GAME_G;
     if (g.spin) {
-        v = 5.4f + frand() * 1.6f;
+        v = (5.2f + frand() * 1.4f) * (0.9f + 0.1f * g.skill);
         bounce_d = 3 + frand() * 5;
-        g.ax = spread() * 0.06f, g.turn = spread() * 0.55f, e = 0.5f + frand() * 0.12f;
+        g.ax = spread() * 0.06f, g.turn = spread() * 0.55f * g.skill, e = 0.5f + frand() * 0.12f;
         g.runup = 0.75f;
     } else {
-        v = 9.2f + 2.4f * p + frand() * 1.6f;
+        v = (g.btype == 0 ? 10.0f + frand() * 1.8f : 8.6f + frand() * 1.4f) * (0.88f + 0.12f * g.skill);
         if (frand() < 0.16f) v *= 0.7f + frand() * 0.1f; /* a slower ball */
         bounce_d = 6 + spread() * 8; /* -2 (a full toss) to 14 (a bouncer), mostly a good length */
-        g.ax = spread() * 0.36f, g.turn = spread() * 0.12f, e = 0.36f + frand() * 0.12f;
+        g.ax = spread() * (g.btype == 1 ? 0.42f : 0.3f) * g.skill, g.turn = spread() * 0.12f * g.skill,
+        e = 0.36f + frand() * 0.12f;
         g.runup = 1.0f + frand() * 0.3f;
     }
     g.v = v;
@@ -367,7 +373,20 @@ static void new_ball(void) {
     int over = over_now();
     g.state = S_RUNUP, g.t = 0;
     pick_delivery();
-    g.six_half = six_half_for(over);
+    if (g.balls % 6 == 0) { /* a new over: a new bowler, fast, medium or spin, sharper or not */
+        int last = g.bnum;
+        g.btype = frand() < 0.45f ? 0 : frand() < 0.55f ? 1 : 2;
+        g.skill = clampf(g.attack * (0.85f + frand() * 0.3f), 0.6f, 1.5f);
+        do g.bnum = 1 + (int)(rnd() % 99);
+        while (g.bnum == last);
+        char s[48], *p = put(s, g.balls ? "Over " : "");
+        if (g.balls) p = puti(p, over + 1), p = put(p, ": ");
+        else p = put(p, g.attack < 0.9f ? "Gentle attack. " : g.attack < 1.12f ? "Steady attack. " : "Fiery attack. ");
+        p = put(p, "#"), p = puti(p, g.bnum), p = put(p, g.btype == 0 ? ", fast" : g.btype == 1 ? ", medium" : ", spin");
+        put(p, g.skill < 0.9f ? ", gentle" : g.skill < 1.12f ? "" : ", sharp");
+        banner(s, RGB(255, 255, 255));
+    }
+    g.six_half = clampf(six_half_for(over) / g.skill, 0.1f, 0.4f);
     g.swing_age = g.ball_age = 0;
     g.swung = g.shown = 0, g.how = H_NONE, g.got = 0, g.catcher = -1, g.bail_t = -1;
     g.bx = g.X0, g.by = g.Y0, g.bd = RELEASE_D;
@@ -378,6 +397,7 @@ static void new_ball(void) {
 static void start_match(int overs) {
     g.overs = overs, g.runs = g.wkts = g.balls = 0;
     pick_lineup();
+    g.attack = 0.75f + frand() * 0.55f, g.bnum = 0; /* the match's attack: gentle to fiery */
     for (int i = 0; i <= WICKETS; ++i) g.card[i].runs = g.card[i].balls = g.card[i].fours = g.card[i].sixes = g.card[i].out = 0;
     g.striker = 0, g.other = 1, g.next_in = 2, g.page = 0;
     g.stand = g.best_stand = 0, g.best_a = 0, g.best_b = 1;
@@ -439,7 +459,7 @@ static void swing(void) {
         else if (off < 0.38f) g.got = 4, g.R = 64, g.ymax = 1.2f, g.dur = 1.35f;
         else if (off < 0.56f) g.got = 2, g.R = 40, g.ymax = 7, g.dur = 1.15f;
         else g.got = 1, g.R = 20, g.ymax = 2, g.dur = 0.9f;
-        float catch_p = g.got == 4 ? 0.12f : g.got == 2 ? 0.18f : 0;
+        float catch_p = (g.got == 4 ? 0.12f : g.got == 2 ? 0.18f : 0) * g.skill;
         if (frand() < catch_p) { /* to the nearest fielder: caught in the deep */
             float best = 1e9f;
             for (int i = 0; i < FIELDERS; ++i) {
@@ -787,9 +807,10 @@ static pose pmix(pose a, pose b, float t) {
                    mixf(a.crouch, b.crouch, t), mixf(a.lean, b.lean, t) };
 }
 
-static const pose STANCE = { { 0.80f, 0, -0.02f }, { 0.40f, 0, 0.48f }, { 0.86f, 0.92f, 0.22f }, { 0.86f, 0.03f, -0.06f }, 0.12f, 0.05f };
-static const pose BACKLIFT = { { 0.80f, 0, -0.02f }, { 0.38f, 0, 0.54f }, { 0.86f, 1.30f, 0.06f }, { 1.02f, 1.98f, -0.30f }, 0.14f, 0.08f };
-static const pose LEAVE = { { 0.82f, 0, 0.0f }, { 0.44f, 0, 0.58f }, { 0.74f, 1.82f, 0.22f }, { 0.80f, 2.62f, 0.10f }, 0.05f, 0 };
+/* hands: the top glove, at the top of the handle; toe: where the bat's toe points */
+static const pose STANCE = { { 0.76f, 0, -0.02f }, { 0.44f, 0, 0.48f }, { 0.84f, 0.74f, 0.20f }, { 0.98f, 0.02f, 0.02f }, 0.13f, 0.06f };
+static const pose BACKLIFT = { { 0.76f, 0, -0.02f }, { 0.42f, 0, 0.54f }, { 0.92f, 1.08f, 0.00f }, { 1.12f, 1.72f, -0.55f }, 0.15f, 0.08f };
+static const pose LEAVE = { { 0.78f, 0, 0.0f }, { 0.48f, 0, 0.58f }, { 0.76f, 1.75f, 0.18f }, { 0.86f, 2.55f, 0.02f }, 0.05f, 0 };
 /* each shot: its contact, then its follow-through (feet are set by the length) */
 static const pose SHOT[5][2] = {
     { { { 0, 0, 0 }, { 0, 0, 0 }, { 0.56f, 0.92f, 0.46f }, { 0.20f, 0.22f, 0.12f }, 0.2f, 0.15f }, /* glance, fine leg */
@@ -805,9 +826,9 @@ static const pose SHOT[5][2] = {
 };
 
 static pose with_feet(pose p, int full, int shortb) { /* footwork: forward to a full ball, back to a short one */
-    p.back = V(0.80f, 0, -0.02f), p.front = V(0.40f, 0, 0.48f);
-    if (full) p.front = V(0.34f, 0, 0.88f), p.back = V(0.80f, 0, 0.08f);
-    if (shortb) p.back = V(0.92f, 0, -0.18f), p.front = V(0.52f, 0, 0.28f);
+    p.back = V(0.76f, 0, -0.02f), p.front = V(0.44f, 0, 0.48f);
+    if (full) p.front = V(0.38f, 0, 0.88f), p.back = V(0.76f, 0, 0.08f);
+    if (shortb) p.back = V(0.88f, 0, -0.18f), p.front = V(0.56f, 0, 0.28f);
     return p;
 }
 
@@ -860,7 +881,7 @@ static void batter(void) {
     limb(p.front, V(p.front.x - 0.02f, 0.03f, p.front.d + 0.12f), 0.05f, RGB(250, 250, 250)); /* shoe */
     limb(hip, sh, 0.2f, KIT);
     limb(shL, shR, 0.1f, KIT);
-    limb(V(sh.x, sh.y - 0.02f, sh.d - 0.05f), V(hip.x, hip.y + 0.1f, hip.d - 0.05f), 0.03f, BATTING.trim); /* a stripe down the back */
+    limb(V(shL.x, shL.y + 0.05f, shL.d), V(shR.x, shR.y + 0.05f, shR.d), 0.025f, BATTING.trim); /* the shoulders' trim */
     { /* the shirt number, across the back */
         char n[4];
         puti(n, g.lineup[batter_in()].num);
@@ -873,22 +894,25 @@ static void batter(void) {
     limb(hipR, kneeB, 0.105f, TROUSER);
     limb(kneeB, p.back, 0.09f, PAD), blob(kneeB, 0.1f, PAD);
     limb(p.back, V(p.back.x - 0.02f, 0.03f, p.back.d + 0.12f), 0.055f, RGB(250, 250, 250));
-    /* the far (left) arm, the bat, the near (right) arm over it */
-    v3 hands = p.hands, elbowL = V(mixf(shL.x, hands.x, 0.5f) - 0.06f, mixf(shL.y, hands.y, 0.5f) - 0.05f, mixf(shL.d, hands.d, 0.5f) + 0.06f);
-    v3 elbowR = V(mixf(shR.x, hands.x, 0.5f) + 0.08f, mixf(shR.y, hands.y, 0.5f) - 0.06f, mixf(shR.d, hands.d, 0.5f) - 0.04f);
-    limb(shL, elbowL, 0.062f, KIT), limb(elbowL, hands, 0.055f, KIT);
-    v3 dir = V(p.toe.x - hands.x, p.toe.y - hands.y, p.toe.d - hands.d);
+    /* the bat: the top hand (the left) at the top of the handle, the bottom hand just under it; the
+     * far (left) arm, then the bat, then the near (right) arm over it */
+    v3 top = p.hands, dir = V(p.toe.x - top.x, p.toe.y - top.y, p.toe.d - top.d);
     float len = fsqrt(dir.x * dir.x + dir.y * dir.y + dir.d * dir.d);
     if (len < 0.01f) len = 0.01f;
     v3 u = V(dir.x / len, dir.y / len, dir.d / len);
-    v3 shoulder_of_bat = V(hands.x + u.x * 0.28f, hands.y + u.y * 0.28f, hands.d + u.d * 0.28f);
-    v3 toe = V(hands.x + u.x * 0.86f, hands.y + u.y * 0.86f, hands.d + u.d * 0.86f);
-    limb(hands, shoulder_of_bat, 0.02f, RGB(30, 30, 30));               /* the handle's grip */
-    limb(shoulder_of_bat, toe, 0.058f, RGB(198, 154, 96));                /* the blade */
-    limb(V(shoulder_of_bat.x + 0.01f, shoulder_of_bat.y, shoulder_of_bat.d), V(toe.x + 0.01f, toe.y, toe.d), 0.018f,
-         RGB(226, 190, 136));                                            /* its face, catching the light */
-    limb(shR, elbowR, 0.065f, KIT), limb(elbowR, hands, 0.058f, KIT);
-    blob(hands, 0.075f, GLOVE);
+#define ALONG(t) V(top.x + u.x * (t), top.y + u.y * (t), top.d + u.d * (t))
+    v3 low = ALONG(0.12f), handle_top = ALONG(-0.05f), splice = ALONG(0.28f), toe = ALONG(0.86f);
+    v3 elbowL = V(mixf(shL.x, top.x, 0.5f) - 0.02f, mixf(shL.y, top.y, 0.5f) + 0.02f, mixf(shL.d, top.d, 0.5f) + 0.1f); /* the front elbow up */
+    v3 elbowR = V(mixf(shR.x, low.x, 0.5f) + 0.07f, mixf(shR.y, low.y, 0.5f) - 0.05f, mixf(shR.d, low.d, 0.5f) - 0.05f);
+    limb(shL, elbowL, 0.062f, KIT), limb(elbowL, top, 0.055f, KIT);
+    limb(handle_top, splice, 0.022f, RGB(36, 36, 40));                    /* the handle's rubber grip */
+    limb(splice, toe, 0.06f, RGB(198, 154, 96));                           /* the blade */
+    limb(ALONG(0.32f), ALONG(0.84f), 0.02f, RGB(228, 192, 140));            /* its edge, catching the light */
+    blob(top, 0.062f, GLOVE);
+    limb(shR, elbowR, 0.065f, KIT), limb(elbowR, low, 0.058f, KIT);
+    blob(low, 0.064f, GLOVE);
+    limb(top, low, 0.05f, GLOVE);
+#undef ALONG
     /* the helmet: its peak down the pitch, the neck guard toward us */
     blob(V(head.x, head.y - 0.14f, head.d - 0.02f), 0.05f, BATTING.skin);
     blob(head, 0.14f, BATTING.cap);
