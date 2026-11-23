@@ -180,8 +180,9 @@ FRAMES = {
     'b_bowl2': ('field', dict(legs=(((84, 226), (82, 286)), ((122, 238), (132, 280))), arms=((132, 206), (150, 150)), crouch=10, tilt=8)),
     'u_stand': ('umpire', dict(legs=STAND_LEGS, arms=((94, 196), (106, 196)))),
     'u_six': ('umpire', dict(legs=STAND_LEGS, arms=((66, 26), (134, 26)))),
-    'u_four0': ('umpire', dict(legs=STAND_LEGS, arms=((92, 196), (176, 132)))),
-    'u_four1': ('umpire', dict(legs=STAND_LEGS, arms=((92, 196), (174, 104)))),
+    'u_four0': ('umpire', dict(legs=STAND_LEGS, arms=((92, 196), (166, 136)))),  # four: the arm swept across the chest
+    'u_four1': ('umpire', dict(legs=STAND_LEGS, arms=((92, 196), (60, 134)))),
+    'u_wide': ('umpire', dict(legs=STAND_LEGS, arms=((22, 122), (178, 122)))),
     'u_out': ('umpire', dict(legs=STAND_LEGS, arms=((92, 196), (128, 40)), finger=True)),
     'n_stand': ('bat', dict(legs=STAND_LEGS, arms=((104, 188), (110, 182)), bat=((110, 186), (126, 282)))),
     'n_jog0': ('bat', dict(legs=(((84, 222), (84, 274)), ((116, 236), (118, 286))), arms=((100, 176), (108, 170)), bat=((106, 174), (150, 252)), crouch=4)),

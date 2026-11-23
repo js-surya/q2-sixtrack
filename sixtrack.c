@@ -229,15 +229,15 @@ static char *puti(char *p, int v) {
 #define BAND_W 1.4f
 #define BAND0 (STRIP_FAR - RED_W) /* the first band's far edge */
 #define STRIP_NEAR (BAND0 - 5 * BAND_W - RED_W)
+#define D_IDEAL (BAND0 - 2.5f * BAND_W) /* where the ball is seen at the perfect moment */
 
-static const float band_ang[5] = { 135, 45, 0, -45, -135 }; /* degrees off straight, + to leg (left) */
 static const char *const band_name[5] = { "fine leg", "midwicket", "straight", "cover", "third man" };
 static const u32 band_col[5] = { RGB(176, 96, 246), RGB(64, 150, 255), RGB(64, 210, 100), RGB(252, 208, 52),
                                  RGB(255, 140, 50) };
 static const u32 RED = RGB(236, 64, 64);
 
 enum { S_MENU, S_RUNUP, S_BALL, S_HIT, S_END, S_PAUSE, S_COUNT };
-enum { H_NONE, H_RUNS, H_BOWLED, H_BEHIND, H_DEEP };
+enum { H_NONE, H_RUNS, H_BOWLED, H_BEHIND, H_DEEP, H_WIDE };
 
 typedef struct {
     float hx, hd, x, d; /* home and now, metres */
@@ -260,7 +260,7 @@ static struct {
     float runup;
     /* the ball's flight: released at (X0, Y0), v down the pitch, vx across, vy0 up; ax its swing;
      * bouncing at time tb, rising at vyb after, turned across at turn; G the game's gravity */
-    float X0, Y0, vx, vy0, ax, tb, vyb, turn, G;
+    float X0, Y0, vx, vy0, ax, tb, vyb, turn, G, d_ideal;
     float swing_t; /* when the bat swung, in state time */
     float swing_age, ball_age; /* seconds since the swing, and since this ball was bowled */
     int how, got, band, edge_side;
@@ -278,7 +278,8 @@ static struct {
     /* the innings: each batter's card, who is on strike, who is next, the partnerships */
     struct { int runs, balls, fours, sixes, out; } card[WICKETS + 1]; /* out: 0 not out, else a H_ code */
     int striker, other, next_in, page;
-    int stand, best_stand, best_a, best_b;
+    int stand, best_stand, best_a, best_b, extras;
+    int wide; /* this ball would be called wide if not hit */
     /* the bowling: the attack's level for the match, and this over's bowler */
     float attack, skill;
     /* the field: each fielder's place for this over (degrees off straight for a right-hander, metres
@@ -346,11 +347,13 @@ static void place_fielders(void) {
 
 static void make_bg(int over);
 static void banner(const char *s, u32 c);
+static void delivery_at(float t, float *X, float *Y, float *d);
 
 /* Every ball its own: pace, length, line, swing and movement off the pitch drawn at random, then
  * flown as a projectile that bounces, so it can only be timed by watching it. The game runs in slow
  * motion (a fast ball takes about 2 s), so gravity is scaled by the same factor squared. */
 #define GAME_G 0.62f
+#define SLOW_MO 3.7f /* real pace to the game's: 150 km/h is 11.3 m/s here */
 
 static float spread(void) { return frand() + frand() - 1; } /* -1..1, most near 0 */
 
@@ -359,15 +362,26 @@ static void pick_delivery(void) {
     g.spin = g.btype == 2;
     (void)p;
     float v, bounce_d, e, Xt = spread() * 0.2f; /* Xt: where it would cross the stumps' line */
+    float wild = frand(); /* now and then a wayward one: well wide of off, or down the leg side */
+    if (wild < 0.05f) Xt = (0.75f + frand() * 0.5f) * hand();
+    else if (wild < 0.08f) Xt = -(0.5f + frand() * 0.35f) * hand();
     g.X0 = 0.3f * hand() + spread() * 0.15f, g.Y0 = 2.1f + spread() * 0.12f, g.G = GAME_G;
+    /* The speed, from real cricket's range (about 70 km/h slow spin to 161 km/h, the fastest recorded),
+     * by the bowler's type, a sharper bowler a little quicker; the game's pace is that in slow motion. */
+    float kmh;
+    if (g.spin) kmh = 70 + frand() * 22 + (frand() < 0.12f ? 6 : 0);              /* spin, an arm ball quicker */
+    else if (g.btype == 1) kmh = 110 + frand() * 20;                               /* medium pace */
+    else kmh = 135 + frand() * 18 + (frand() < 0.12f ? frand() * 8 : 0);          /* fast, sometimes express */
+    if (!g.spin && frand() < 0.15f) kmh = 95 + frand() * 23;                       /* a slower ball */
+    kmh = minf(kmh * (0.97f + 0.03f * g.skill), 161);
+    g.kmh = (int)kmh;
     if (g.spin) {
-        v = (5.2f + frand() * 1.4f) * (0.9f + 0.1f * g.skill);
+        v = kmh / 3.6f / SLOW_MO;
         bounce_d = 3 + frand() * 5;
         g.ax = spread() * 0.06f, g.turn = spread() * 0.55f * g.skill, e = 0.5f + frand() * 0.12f;
         g.runup = 0.75f;
     } else {
-        v = (g.btype == 0 ? 10.0f + frand() * 1.8f : 8.6f + frand() * 1.4f) * (0.88f + 0.12f * g.skill);
-        if (frand() < 0.16f) v *= 0.7f + frand() * 0.1f; /* a slower ball */
+        v = kmh / 3.6f / SLOW_MO;
         bounce_d = 6 + spread() * 8; /* -2 (a full toss) to 14 (a bouncer), mostly a good length */
         g.ax = spread() * (g.btype == 1 ? 0.42f : 0.3f) * g.skill, g.turn = spread() * 0.12f * g.skill,
         e = 0.36f + frand() * 0.12f;
@@ -383,7 +397,23 @@ static void pick_delivery(void) {
     if (ts <= g.tb) g.vx = (Xt - g.X0 - 0.5f * g.ax * ts * ts) / ts;
     else g.vx = (Xt - g.X0 - 0.5f * g.ax * g.tb * g.tb - (g.ax * g.tb + g.turn) * (ts - g.tb)) / ts;
     g.bounce_d = bounce_d;
-    g.kmh = g.spin ? (int)(70 + v * 2.6f + frand() * 3) : (int)(60 + v * 7.2f + frand() * 3);
+    /* The perfect moment, as where the ball is seen then: a full ball met early on the front foot, a
+     * short one late on the back foot, a yorker dug out late at the crease, spin met coming forward. */
+    float meet = bounce_d < STUMPS_D ? 0.8f : bounce_d < 1.5f ? -0.5f : bounce_d < 4.5f ? 0.6f : bounce_d < 9 ? 0
+               : bounce_d < 12 ? -0.6f : -0.9f;
+    g.d_ideal = D_IDEAL + meet + (g.spin ? 0.4f : 0);
+    /* Wide, by the limited-overs playing conditions, judged at the batter's crease: beyond the off-side
+     * wide guideline (about 0.9 m from middle stump), down the leg side past the batter's legs, or over
+     * his head. Off side is + for a right-hander, mirrored for a left-hander. */
+    float ts0 = RELEASE_D / v, xc, yc, dc;
+    {
+        float X = 0, Y = 0, d = 0;
+        g.bounce_d = bounce_d;
+        delivery_at(ts0, &X, &Y, &d);
+        xc = X * hand(), yc = Y, dc = d;
+    }
+    (void)dc;
+    g.wide = xc > 0.9f || xc < -0.45f || yc > 1.9f;
 }
 
 /* The replay caption: pace, length and movement, said after the ball */
@@ -436,7 +466,7 @@ static void start_match(int overs) {
     g.target = (int)((float)overs * rpo + 0.5f) + 1;
     for (int i = 0; i <= WICKETS; ++i) g.card[i].runs = g.card[i].balls = g.card[i].fours = g.card[i].sixes = g.card[i].out = 0;
     g.striker = 0, g.other = 1, g.next_in = 2, g.page = 0;
-    g.stand = g.best_stand = 0, g.best_a = 0, g.best_b = 1;
+    g.stand = g.best_stand = 0, g.best_a = 0, g.best_b = 1, g.extras = 0;
     int balls = overs * 6;
     (void)balls;
     g.banner_t = 0;
@@ -520,27 +550,42 @@ static void swing(void) {
     proj(X, Y, d, &sx, &sy);
     d = ground_d(sy);
     g.band = -1;
-    if (d > STRIP_FAR || d < STRIP_NEAR) return; /* a miss: on to the stumps */
-    if (d > BAND0 || d < BAND0 - 5 * BAND_W) { /* an edge */
-        g.edge_side = d < BAND0 - 5 * BAND_W;
-        if (frand() < 0.5f) {
+    /* How far from the perfect moment (ms, + late): that decides the shot's quality, and early or late
+     * steers it, leg side or off side. A sharper bowler leaves less time. */
+    float e = (g.d_ideal - d) / g.v * 1000, ae = absf(e) * clampf(g.skill, 0.75f, 1.35f);
+    if (ae > 85) return; /* beaten: on to the stumps */
+    if (ae > 55) { /* an edge */
+        g.edge_side = e > 0;
+        if (frand() < 0.22f * g.skill) {
             g.how = H_BEHIND, g.got = 0;
             g.ang = (g.edge_side ? -160 : 160) * hand(), g.R = 18, g.ymax = 1.5f, g.dur = 0.55f;
         } else {
-            g.how = H_RUNS, g.got = 1;
+            g.how = H_RUNS, g.got = frand() < 0.6f;
             g.ang = (g.edge_side ? -150 : 150) * hand(), g.R = 22, g.ymax = 0.6f, g.dur = 0.8f;
         }
     } else {
-        int b = (int)((BAND0 - d) / BAND_W);
-        if (b > 4) b = 4;
-        float centre = BAND0 - BAND_W * ((float)b + 0.5f), off = absf(d - centre);
-        g.band = b, g.how = H_RUNS;
-        g.ang = band_ang[b] * hand() + (frand() - 0.5f) * 18;
-        if (off < g.six_half) g.got = 6, g.R = 80, g.ymax = 22, g.dur = 1.7f;
-        else if (off < 0.38f) g.got = 4, g.R = 64, g.ymax = 1.2f, g.dur = 1.35f;
-        else if (off < 0.56f) g.got = 2, g.R = 40, g.ymax = 7, g.dur = 1.15f;
-        else g.got = 1, g.R = 20, g.ymax = 2, g.dur = 0.9f;
-        field_the_shot();
+        /* Where real batters score: the line and length set the shot (on the pads flicked to leg, outside
+         * off driven or cut, short pulled, full driven straight), the timing pushes it squarer: early to
+         * the leg side (+), late to the off side. */
+        float lx = X * hand(), base = clampf(-lx * 320, -95, 95) + 16 + (frand() - 0.5f) * 90; /* the line, his choice */
+        if (g.bounce_d > 9) base = lx > 0.3f ? -90 : 60 + frand() * 40;      /* short: cut if wide of off, else pulled */
+        else if (g.bounce_d < 4.5f) base *= 0.55f;                          /* full: driven, straighter */
+        float a = clampf(base + clampf(-e / 40, -1, 1) * 95, -168, 168);
+        g.band = a > 100 ? 0 : a > 30 ? 1 : a > -30 ? 2 : a > -100 ? 3 : 4;
+        g.how = H_RUNS, g.ang = a * hand();
+        /* a bad ball (a full toss, a half-volley, a short one) is easier to hit for six */
+        int bad = g.bounce_d < STUMPS_D || (g.bounce_d > 2.5f && g.bounce_d < 4.5f) || g.bounce_d > 10.5f;
+        float r = frand();
+        if (ae < 10) g.got = bad ? (r < 0.7f ? 6 : 4) : (r < 0.35f ? 6 : r < 0.8f ? 4 : 2);
+        else if (ae < 25) g.got = bad ? (r < 0.25f ? 6 : r < 0.65f ? 4 : 2) : (r < 0.4f ? 4 : r < 0.75f ? 2 : 1);
+        else g.got = r < 0.3f ? 2 : r < 0.7f ? 1 : 0;
+        if (absf(a) > 110 && g.got == 6) g.got = 4; /* fine: not over the rope */
+        if (g.got == 6) g.R = 80, g.ymax = 22, g.dur = 1.7f;
+        else if (g.got == 4) g.R = 64, g.ymax = 1.2f, g.dur = 1.35f;
+        else if (g.got == 2) g.R = 40, g.ymax = 7, g.dur = 1.15f;
+        else if (g.got == 1) g.R = 20, g.ymax = 2, g.dur = 0.9f;
+        else g.R = 12, g.ymax = 0.4f, g.dur = 0.7f; /* straight to a fielder: a dot */
+        if (g.got) field_the_shot();
     }
     g.state = S_HIT, g.t = 0;
     g.bx = BAT_HIT * hand(), g.by = 0.8f, g.bd = 0.4f;
@@ -556,6 +601,12 @@ static void swing(void) {
 }
 
 static void end_ball(void) {
+    if (g.how == H_WIDE) { /* an extra, not a ball: bowled again, the strike unchanged */
+        g.runs++, g.extras++, g.stand++;
+        if (g.runs >= g.target) g.state = S_END, g.won = 1, g.t = 0, g.page = 0;
+        else new_ball();
+        return;
+    }
     g.balls++;
     int out = g.how != H_RUNS;
     g.card[g.striker].balls++;
@@ -611,7 +662,9 @@ static void step(float dt) {
         delivery_at(g.t, &g.bx, &g.by, &g.bd);
         if (g.bd <= STUMPS_D) {
             g.state = S_HIT, g.t = 0, g.dur = 0, g.shown = 1;
-            if (absf(g.bx) < 0.15f && g.by < 0.75f) /* on the stumps, under the bails: bowled */
+            if (g.wide) /* not hit, and out of his reach: a wide, one run, bowled again */
+                g.how = H_WIDE, g.got = 0, banner("Wide! +1", RGB(255, 214, 64));
+            else if (absf(g.bx) < 0.15f && g.by < 0.75f) /* on the stumps, under the bails: bowled */
                 g.how = H_BOWLED, g.got = 0, g.bail_t = 0, banner("BOWLED!", RED);
             else /* past the off or leg stump: a dot ball */
                 g.how = H_RUNS, g.got = 0, banner(g.swung ? "Beaten!" : "Left alone", RGB(200, 210, 230));
@@ -811,7 +864,7 @@ static const kit BATTING = { RGB(40, 84, 214), RGB(250, 200, 46), RGB(32, 66, 17
 static const kit FIELDING = { RGB(30, 150, 84), RGB(250, 250, 250), RGB(24, 116, 66), RGB(176, 124, 90), RGB(20, 90, 50) };
 static const kit UMPIRE = { RGB(250, 250, 250), RGB(40, 40, 40), RGB(40, 40, 46), RGB(210, 160, 120), RGB(20, 20, 24) };
 
-enum { P_IDLE, P_RUN, P_BOWL, P_SIX, P_FOUR, P_OUT, P_CATCH };
+enum { P_IDLE, P_RUN, P_BOWL, P_SIX, P_FOUR, P_OUT, P_CATCH, P_WIDE };
 
 /* A figure standing at (X, d), k pixels to the metre (boosted far away, so it reads), in a pose. */
 /* The other players: drawn frames (art/gen_people.py, packed into sprites.h), facing us. */
@@ -868,7 +921,7 @@ static void figure(float X, float d, float boost, const kit *c, int pose, float 
     float h = 1.85f * scale_at(d) * boost;
     int f;
     if (c == &UMPIRE)
-        f = pose == P_SIX ? PF_U_SIX : pose == P_FOUR ? ((int)(ph * 4) & 1 ? PF_U_FOUR1 : PF_U_FOUR0)
+        f = pose == P_SIX ? PF_U_SIX : pose == P_WIDE ? PF_U_WIDE : pose == P_FOUR ? ((int)(ph * 4) & 1 ? PF_U_FOUR1 : PF_U_FOUR0)
           : pose == P_OUT ? PF_U_OUT : PF_U_STAND;
     else if (c == &BATTING)
         f = pose == P_RUN ? ((int)ph & 1 ? PF_N_JOG1 : PF_N_JOG0) : PF_N_STAND;
@@ -995,6 +1048,7 @@ static void people(void) {
     int pose = P_IDLE;
     if (g.state == S_HIT && g.t > (g.how == H_BOWLED ? 0.2f : g.dur)) {
         if (g.how == H_RUNS) pose = g.got == 6 ? P_SIX : g.got == 4 ? P_FOUR : P_IDLE;
+        else if (g.how == H_WIDE) pose = P_WIDE;
         else pose = P_OUT;
     }
     figure(-0.8f, 22.4f, 2.5f, &UMPIRE, pose, g.clock);
@@ -1053,6 +1107,23 @@ static void hud(void) {
         p = put(s, "Need "), p = puti(p, need > 0 ? need : 0), p = put(p, " off "), puti(p, left);
         text(CX + 118 - text_w(s, 0.7f), 27, s, 0.7f, RGB(190, 205, 235), 1);
     }
+}
+
+/* The umpire's signal, close up, as television cuts to him: six, four, out, wide */
+static void umpire_close_up(void) {
+    if (g.state != S_HIT || !g.shown || g.banner_t < 0.25f) return;
+    int f;
+    if (g.how == H_RUNS && g.got == 6) f = PF_U_SIX;
+    else if (g.how == H_RUNS && g.got == 4) f = (int)(g.clock * 4) & 1 ? PF_U_FOUR1 : PF_U_FOUR0;
+    else if (g.how == H_WIDE) f = PF_U_WIDE;
+    else if (g.how == H_BOWLED || g.how == H_BEHIND || g.how == H_DEEP) f = PF_U_OUT;
+    else return;
+    float a = sat((1.6f - g.banner_t) * 6) * sat(g.banner_t * 4);
+    int x = 14, y = 110, w = 96, h = 132;
+    rrect(x, y, w, h, 10, RGB(10, 14, 30), 0.8f * a);
+    rrect(x + 3, y + 3, w - 6, h - 26, 8, RGB(60, 140, 60), 0.9f * a);
+    if (a > 0.5f) blit_scaled(f, (float)x + w / 2.0f, (float)(y + h - 26), 96);
+    text_c((float)x + w / 2.0f, (float)(y + h - 22), "UMPIRE", 0.6f, RGB(230, 236, 250), a);
 }
 
 static void result_banner(void) {
@@ -1122,6 +1193,9 @@ static void card_screen(void) {
         text_c(CX, (float)y + 2, s, 0.52f, RGB(170, 186, 220), 1);
         y += 18;
     }
+    p = put(s, "Extras "), p = puti(p, g.extras), put(p, " (wides)");
+    text_c(CX, (float)y + 4, s, 0.52f, RGB(170, 186, 220), 1);
+    y += 16;
     p = put(s, "Best stand "), p = puti(p, g.best_stand), p = put(p, ": #"), p = puti(p, g.lineup[g.best_a].num),
     p = put(p, " & #"), puti(p, g.lineup[g.best_b].num);
     text_c(CX, (float)y + 4, s, 0.58f, RGB(255, 214, 64), 1);
@@ -1167,6 +1241,7 @@ static void render(void) {
         return;
     }
     hud();
+    umpire_close_up();
     result_banner();
     if (g.state == S_COUNT) { /* 3, 2, 1, PLAY! */
         int n = 3 - (int)(g.t / 0.85f);
