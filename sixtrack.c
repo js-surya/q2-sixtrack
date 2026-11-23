@@ -800,45 +800,97 @@ static void make_bg(int over) {
 /* ---- people ---- */
 
 typedef struct { u32 shirt, trim, pants, skin, cap; } kit;
-static const kit BATTING = { RGB(40, 84, 214), RGB(250, 200, 46), RGB(244, 244, 240), RGB(200, 150, 110), RGB(22, 36, 96) };
-static const kit FIELDING = { RGB(30, 150, 84), RGB(250, 250, 250), RGB(244, 244, 240), RGB(176, 124, 90), RGB(20, 90, 50) };
+static const kit BATTING = { RGB(40, 84, 214), RGB(250, 200, 46), RGB(32, 66, 172), RGB(200, 150, 110), RGB(22, 36, 96) };
+static const kit FIELDING = { RGB(30, 150, 84), RGB(250, 250, 250), RGB(24, 116, 66), RGB(176, 124, 90), RGB(20, 90, 50) };
 static const kit UMPIRE = { RGB(250, 250, 250), RGB(40, 40, 40), RGB(40, 40, 46), RGB(210, 160, 120), RGB(20, 20, 24) };
 
 enum { P_IDLE, P_RUN, P_BOWL, P_SIX, P_FOUR, P_OUT, P_CATCH };
 
 /* A figure standing at (X, d), k pixels to the metre (boosted far away, so it reads), in a pose. */
+/* Lit from the upper left, as the batter: shade, colour, highlight (screen pixels) */
+static void scap(float x0, float y0, float x1, float y1, float r, u32 c) {
+    if (r < 0.7f) r = 0.7f;
+    capsule(x0, y0, x1, y1, r, shade(c, 0.72f), 1);
+    if (r < 1.2f) return; /* too small for more */
+    capsule(x0 - r * 0.2f, y0 - r * 0.12f, x1 - r * 0.2f, y1 - r * 0.12f, r * 0.72f, c, 1);
+    capsule(x0 - r * 0.42f, y0 - r * 0.2f, x1 - r * 0.42f, y1 - r * 0.2f, r * 0.22f, shade(c, 1.3f), 0.5f);
+}
+static void sdisc(float x, float y, float r, u32 c) {
+    if (r < 0.7f) r = 0.7f;
+    disc(x, y, r, shade(c, 0.72f), 1);
+    if (r < 1.2f) return;
+    disc(x - r * 0.2f, y - r * 0.18f, r * 0.75f, c, 1);
+    disc(x - r * 0.38f, y - r * 0.4f, r * 0.25f, shade(c, 1.5f), 0.55f);
+}
+
+/* A fielder, the bowler, the umpire or the non-striker, facing us, standing at (X, d), drawn boost
+ * times life size so it reads far away, in a pose: ready (crouched, walking in), running, bowling,
+ * catching, or the umpire's signals. ph drives the motion. */
 static void figure(float X, float d, float boost, const kit *c, int pose, float ph) {
     float fx, fy;
     proj(X, 0, d, &fx, &fy);
     float k = scale_at(d) * boost;
-    float hip = fy - 0.92f * k, sh = fy - 1.42f * k, head = fy - 1.66f * k, lw = maxf(0.6f, 0.075f * k);
-    float stride = pose == P_RUN ? 0.22f * fsin(ph) : 0;
+    int umpire = c == &UMPIRE;
     for (int i = 0; i < 4; ++i) { /* a shadow from each floodlight */
         float sx = (i & 1 ? 1 : -1) * 0.45f * k, sy = (i & 2 ? 0.05f : -0.05f) * k;
         ellipse(fx + sx, fy + sy, 0.5f * k, 0.07f * k, RGB(0, 0, 0), 0.12f);
     }
-    capsule(fx - 0.1f * k, hip, fx - 0.12f * k - stride * k, fy - lw, lw, c->pants, 1);
-    capsule(fx + 0.1f * k, hip, fx + 0.12f * k + stride * k, fy - lw, lw, c->pants, 1);
-    capsule(fx, hip, fx, sh, 0.2f * k, c->shirt, 1);
-    capsule(fx - 0.14f * k, sh + 0.05f * k, fx + 0.14f * k, sh + 0.05f * k, 0.06f * k, c->trim, 0.9f);
-    /* arms: shoulder to hand, per pose */
-    float al = 0.55f * k, ax0 = -0.45f, ay0 = 0.5f, ax1 = 0.45f, ay1 = 0.5f; /* hand offsets, in arm lengths */
-    if (pose == P_RUN) ax0 = -0.3f + 0.3f * fsin(ph), ay0 = 0.8f, ax1 = 0.3f - 0.3f * fsin(ph), ay1 = 0.8f;
-    else if (pose == P_BOWL) { /* the bowling arm over the top */
-        float a = ph;
-        ax1 = fsin(a), ay1 = fcos(a);
-        ax0 = -0.5f, ay0 = -0.4f;
-    } else if (pose == P_SIX) ax0 = -0.25f, ay0 = -1, ax1 = 0.25f, ay1 = -1;
+    /* the crouch: fielders ready, walking in */
+    float crouch = pose == P_IDLE && !umpire ? 0.1f + 0.03f * fsin(ph * 0.5f) : pose == P_RUN ? 0.06f : 0;
+    float stride = pose == P_RUN ? 0.24f * fsin(ph) : pose == P_IDLE && !umpire ? 0.05f * fsin(ph * 0.5f) : 0;
+    float hip = fy - (0.92f - crouch) * k, sh = fy - (1.42f - crouch * 1.3f) * k, head = sh - 0.25f * k;
+    float lean = pose == P_IDLE && !umpire ? 0.04f * k : 0; /* weight forward, toward us */
+    /* legs: thigh to knee to foot, knees bent by the crouch and the stride */
+    for (int sgn = -1; sgn <= 1; sgn += 2) {
+        float st = (float)sgn * stride, fxx = fx + (float)sgn * 0.13f * k + st * 0.4f * k;
+        float kx = fx + (float)sgn * (0.13f + crouch * 0.6f) * k + st * 0.2f * k, ky = fy - (0.48f - crouch * 0.3f - absf(st) * 0.2f) * k;
+        scap(fx + (float)sgn * 0.09f * k, hip, kx, ky, 0.085f * k, c->pants);
+        scap(kx, ky, fxx, fy - 0.07f * k, 0.07f * k, c->pants);
+        scap(fxx - 0.03f * k, fy - 0.03f * k, fxx + 0.05f * k, fy - 0.03f * k, 0.05f * k, RGB(248, 248, 248)); /* shoe */
+    }
+    /* the torso: a V, the trim at the neck and shoulders, a badge on the chest */
+    float shx = fx + lean;
+    scap(fx, hip, shx, sh + 0.05f * k, 0.18f * k, c->shirt);
+    scap(fx - 0.09f * k, hip, shx - 0.16f * k, sh + 0.04f * k, 0.09f * k, c->shirt);
+    scap(fx + 0.09f * k, hip, shx + 0.16f * k, sh + 0.04f * k, 0.09f * k, c->shirt);
+    scap(shx - 0.2f * k, sh + 0.04f * k, shx + 0.2f * k, sh + 0.04f * k, 0.08f * k, c->shirt);
+    capsule(shx - 0.07f * k, sh + 0.02f * k, shx + 0.07f * k, sh + 0.02f * k, maxf(0.5f, 0.025f * k), c->trim, 0.9f);
+    if (!umpire) disc(shx + 0.09f * k, sh + 0.16f * k, maxf(0.5f, 0.035f * k), c->trim, 0.9f);
+    if (umpire) capsule(shx, sh + 0.06f * k, shx, hip - 0.02f * k, maxf(0.4f, 0.012f * k), RGB(170, 170, 170), 0.8f); /* the coat's opening */
+    /* arms: shoulder, elbow, hand, per pose (hand offsets in arm lengths, x out, y down) */
+    float al = 0.6f * k, ax0 = -0.3f, ay0 = 0.9f, ax1 = 0.3f, ay1 = 0.9f;
+    if (pose == P_IDLE && !umpire) ax0 = -0.12f, ay0 = 0.95f, ax1 = 0.12f, ay1 = 0.95f; /* hands toward the knees */
+    else if (pose == P_RUN) ax0 = -0.25f + 0.35f * fsin(ph), ay0 = 0.75f, ax1 = 0.25f - 0.35f * fsin(ph), ay1 = 0.75f;
+    else if (pose == P_BOWL) ax1 = fsin(ph), ay1 = fcos(ph), ax0 = -0.5f, ay0 = -0.4f; /* the bowling arm over the top */
+    else if (pose == P_SIX) ax0 = -0.25f, ay0 = -1, ax1 = 0.25f, ay1 = -1;
     else if (pose == P_FOUR) ax0 = -0.2f, ay0 = 0.9f, ax1 = 0.6f + 0.35f * fsin(ph * 9), ay1 = -0.1f;
     else if (pose == P_OUT) ax0 = -0.3f, ay0 = 0.85f, ax1 = 0.15f, ay1 = -1;
-    else if (pose == P_CATCH) ax0 = -0.35f, ay0 = -0.8f, ax1 = 0.35f, ay1 = -0.8f;
-    capsule(fx - 0.2f * k, sh + 0.02f * k, fx - 0.2f * k + ax0 * al, sh + 0.02f * k + ay0 * al, lw, c->skin, 1);
-    capsule(fx + 0.2f * k, sh + 0.02f * k, fx + 0.2f * k + ax1 * al, sh + 0.02f * k + ay1 * al, lw, c->skin, 1);
-    disc(fx, head, 0.14f * k, c->skin, 1);
-    if (c == &UMPIRE) { /* a wide-brimmed hat */
-        ellipse(fx, head - 0.05f * k, 0.25f * k, 0.05f * k, c->cap, 1);
-        ellipse(fx, head - 0.11f * k, 0.14f * k, 0.08f * k, c->cap, 1);
-    } else ellipse(fx, head - 0.06f * k, 0.15f * k, 0.08f * k, c->cap, 1);
+    else if (pose == P_CATCH) ax0 = -0.12f, ay0 = -0.9f, ax1 = 0.12f, ay1 = -0.9f; /* cupped above the head */
+    for (int a = 0; a < 2; ++a) {
+        float sgn = a ? 1.0f : -1.0f, sx0 = shx + sgn * 0.2f * k, sy0 = sh + 0.06f * k;
+        float hx = sx0 + (a ? ax1 : ax0) * al, hy = sy0 + (a ? ay1 : ay0) * al;
+        float ex = mixf(sx0, hx, 0.5f) + sgn * 0.06f * k, ey = mixf(sy0, hy, 0.5f);
+        scap(sx0, sy0, mixf(sx0, ex, 0.6f), mixf(sy0, ey, 0.6f), 0.065f * k, umpire ? c->shirt : c->shirt); /* sleeve */
+        scap(mixf(sx0, ex, 0.6f), mixf(sy0, ey, 0.6f), ex, ey, 0.048f * k, umpire ? c->shirt : c->skin);
+        scap(ex, ey, hx, hy, 0.045f * k, umpire ? c->shirt : c->skin);
+        sdisc(hx, hy, 0.05f * k, c->skin);
+    }
+    /* the head: neck, face (eyes toward us), the cap and its peak, or the umpire's hat */
+    scap(shx, sh, shx, head + 0.08f * k, 0.05f * k, c->skin);
+    sdisc(shx, head, 0.13f * k, c->skin);
+    if (k > 9) {
+        disc(shx - 0.045f * k, head + 0.01f * k, 0.016f * k, RGB(30, 24, 20), 1);
+        disc(shx + 0.045f * k, head + 0.01f * k, 0.016f * k, RGB(30, 24, 20), 1);
+    }
+    if (umpire) {
+        ellipse(shx, head - 0.07f * k, 0.25f * k, 0.05f * k, shade(c->cap, 1.4f), 1);
+        sdisc(shx, head - 0.11f * k, 0.12f * k, c->cap);
+        ellipse(shx, head - 0.07f * k, 0.25f * k, 0.035f * k, c->cap, 1);
+    } else {
+        sdisc(shx, head - 0.06f * k, 0.135f * k, c->cap);
+        ellipse(shx, head - 0.01f * k, 0.16f * k, 0.035f * k, shade(c->cap, 0.8f), 1); /* the peak, toward us */
+        disc(shx, head - 0.11f * k, maxf(0.4f, 0.02f * k), c->trim, 0.8f);                 /* the button */
+    }
 }
 
 /* The batter, a right-hander seen from behind the stumps: side-on, knees bent, front foot toward the
