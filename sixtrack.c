@@ -1229,9 +1229,28 @@ static void end_screen(void) {
     text_c(CX, 198, "Centre: scorecard", 0.8f, RGB(255, 255, 255), a);
 }
 
+/* This ball's timing area, very faint across the pitch: the good window, the middled one inside it, and
+ * a thin line at the perfect moment. The ball's picture over the line is the moment, as it is judged.
+ * Shown while the ball comes, faded once the bat swings. */
+static void timing_area(void) {
+    if (g.state != S_BALL && g.state != S_RUNUP) return;
+    float fade = g.state == S_RUNUP ? sat((g.t - (g.runup - 0.5f)) * 3) : g.swung ? sat(1 - (g.t - g.swing_t) * 5) : 1;
+    if (fade <= 0) return;
+    float k = 1 / clampf(g.skill, 0.75f, 1.35f), good = 0.034f * k * g.v, mid = 0.014f * k * g.v;
+    for (int y = 97; y < H; ++y) {
+        float d = ground_d((float)y + 0.5f), off = absf(d - g.d_ideal);
+        if (off > good) continue;
+        float a = (off < 0.03f * g.v ? 0.2f : off < mid ? 0.12f : 0.06f * (1 - off / good) + 0.02f) * fade;
+        float s = scale_at(d), hw = 1.4f * s;
+        for (int x = (int)(CX - hw); x <= (int)(CX + hw); ++x)
+            plot(x, y, RGB(255, 246, 220), a * sat(hw + 0.5f - absf((float)x + 0.5f - CX)) * sat((hw - absf((float)x + 0.5f - CX)) / (0.25f * hw)));
+    }
+}
+
 static void render(void) {
     for (int i = 0; i < W * H; ++i) cv[i] = bg[i];
     T = cv;
+    timing_area();
     people();
     ball();
     batter();
