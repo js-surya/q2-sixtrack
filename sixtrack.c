@@ -274,13 +274,17 @@ static struct {
     fielder f[FIELDERS];
     int bg_over; /* the over the background's strip was drawn for */
     struct { int num, left; } lineup[WICKETS + 1]; /* the batting order: shirt numbers, left-handers */
+    /* the innings: each batter's card, who is on strike, who is next, the partnerships */
+    struct { int runs, balls, fours, sixes, out; } card[WICKETS + 1]; /* out: 0 not out, else a H_ code */
+    int striker, other, next_in, page;
+    int stand, best_stand, best_a, best_b;
     float wheel;
 } g;
 
 static float deg(float a) { return a * (PI / 180); }
 
 /* The batter in: +1 a right-hander, -1 a left-hander, whose stance, shots and field are mirrored */
-static int batter_in(void) { return g.wkts < WICKETS ? g.wkts : WICKETS; }
+static int batter_in(void) { return g.striker; }
 static float hand(void) { return g.lineup[batter_in()].left ? -1.0f : 1.0f; }
 
 /* Eleven batters, shuffled: numbers 1 to 99, none twice; about a third left-handed */
@@ -374,6 +378,9 @@ static void new_ball(void) {
 static void start_match(int overs) {
     g.overs = overs, g.runs = g.wkts = g.balls = 0;
     pick_lineup();
+    for (int i = 0; i <= WICKETS; ++i) g.card[i].runs = g.card[i].balls = g.card[i].fours = g.card[i].sixes = g.card[i].out = 0;
+    g.striker = 0, g.other = 1, g.next_in = 2, g.page = 0;
+    g.stand = g.best_stand = 0, g.best_a = 0, g.best_b = 1;
     int balls = overs * 6;
     g.target = balls + (int)((float)balls * (0.45f + frand() * 0.4f)) + 1; /* about 1.5 to 1.9 a ball */
     g.banner_t = 0;
@@ -459,17 +466,35 @@ static void swing(void) {
 
 static void end_ball(void) {
     g.balls++;
-    if (g.how == H_RUNS) g.runs += g.got;
-    else g.wkts++;
-    if (g.runs >= g.target) g.state = S_END, g.won = 1, g.t = 0;
-    else if (g.wkts >= WICKETS || g.balls >= g.overs * 6) g.state = S_END, g.won = 0, g.t = 0;
+    int out = g.how != H_RUNS;
+    g.card[g.striker].balls++;
+    if (!out) {
+        g.runs += g.got, g.stand += g.got, g.card[g.striker].runs += g.got;
+        g.card[g.striker].fours += g.got == 4, g.card[g.striker].sixes += g.got == 6;
+    } else g.wkts++, g.card[g.striker].out = g.how;
+    if (g.stand > g.best_stand || (out && g.best_stand == 0))
+        g.best_stand = g.stand, g.best_a = g.striker, g.best_b = g.other;
+    if (out) { /* the next batter in, at the striker's end */
+        g.stand = 0;
+        if (g.next_in <= WICKETS) g.striker = g.next_in++;
+    } else if (g.got & 1) { /* an odd number: they have crossed */
+        int t = g.striker;
+        g.striker = g.other, g.other = t;
+    }
+    int over_up = g.balls % 6 == 0;
+    if (g.runs >= g.target) g.state = S_END, g.won = 1, g.t = 0, g.page = 0;
+    else if (g.wkts >= WICKETS || g.balls >= g.overs * 6) g.state = S_END, g.won = 0, g.t = 0, g.page = 0;
     else {
-        int out = g.how != H_RUNS;
-        new_ball();
-        if (out) { /* the next batter in */
-            char s[32], *p = put(s, "New batter #");
-            p = puti(p, g.lineup[batter_in()].num);
-            put(p, g.lineup[batter_in()].left ? ", left-handed" : ", right-handed");
+        if (over_up) { /* the end of an over: the bowling changes ends, so the strike does */
+            int t = g.striker;
+            g.striker = g.other, g.other = t;
+        }
+        new_ball(); /* after the strike is settled: the field is set for the batter now facing */
+        if (out) {
+            char s[40], *p = put(s, "New batter #");
+            int nb = g.next_in - 1;
+            p = puti(p, g.lineup[nb].num);
+            put(p, g.lineup[nb].left ? ", left-handed" : ", right-handed");
             banner(s, RGB(255, 255, 255));
         }
     }
@@ -945,6 +970,12 @@ static void people(void) {
         int moving = absf(f->x - f->tx) + absf(f->d - f->td) > 0.05f;
         figure(f->x, f->d, 3.0f, &FIELDING, f->caught ? P_CATCH : moving ? P_RUN : P_IDLE, g.clock * 12);
     }
+    if (g.state != S_MENU) { /* the non-striker, bat in hand, at the bowler's end */
+        float nx, ny, nk = scale_at(19.4f) * 2.5f;
+        figure(-1.35f, 19.4f, 2.5f, &BATTING, g.state == S_BALL && g.t < 0.6f ? P_RUN : P_IDLE, g.clock * 8);
+        proj(-1.35f, 0, 19.4f, &nx, &ny);
+        capsule(nx + 0.3f * nk, ny - 0.85f * nk, nx + 0.42f * nk, ny - 0.05f * nk, maxf(0.6f, 0.04f * nk), RGB(198, 154, 96), 1);
+    }
     figure(0.55f, bd, 2.5f, &FIELDING, bpose, ph);
     for (int n = 0; n < FIELDERS; ++n) {
         fielder *f = &g.f[order[n]];
@@ -968,7 +999,8 @@ static void hud(void) {
     p = puti(s, g.runs), p = put(p, "/"), p = puti(p, g.wkts);
     text(CX - 118, 5, s, 1, RGB(255, 255, 255), 1);
     p = put(s, "Ov "), p = puti(p, g.balls / 6), p = put(p, "."), p = puti(p, g.balls % 6), p = put(p, "/"), p = puti(p, g.overs);
-    p = put(p, "  #"), p = puti(p, g.lineup[batter_in()].num), put(p, g.lineup[batter_in()].left ? " LHB" : " RHB");
+    p = put(p, "  #"), p = puti(p, g.lineup[g.striker].num), p = put(p, "* "), p = puti(p, g.card[g.striker].runs);
+    p = put(p, "("), p = puti(p, g.card[g.striker].balls), put(p, ")");
     text(CX - 118, 27, s, 0.7f, RGB(190, 205, 235), 1);
     p = put(s, "Target "), puti(p, g.target);
     text(CX + 118 - text_w(s, 0.9f), 6, s, 0.9f, RGB(255, 214, 64), 1);
@@ -1025,7 +1057,45 @@ static void pause_screen(void) {
     }
 }
 
+static void card_screen(void) {
+    char s[64], *p;
+    for (int i = 0; i < W * H; ++i) cv[i] = mixp(cv[i], RGB(4, 6, 16), 238);
+    p = put(s, "Scorecard  "), p = puti(p, g.runs), p = put(p, "/"), p = puti(p, g.wkts), p = put(p, "  ("),
+    p = puti(p, g.balls / 6), p = put(p, "."), p = puti(p, g.balls % 6), put(p, " ov)");
+    text_c(CX, 30, s, 0.8f, RGB(255, 214, 64), 1);
+    int y = 54, shown = 0;
+    for (int i = 0; i <= WICKETS; ++i) {
+        int in = i < g.next_in;
+        if (!in) continue;
+        const char *how = g.card[i].out == H_BOWLED ? "b" : g.card[i].out == H_BEHIND ? "c behind" : g.card[i].out == H_DEEP ? "c deep" : "not out";
+        p = put(s, "#"), p = puti(p, g.lineup[i].num), put(p, g.lineup[i].left ? " L" : " R");
+        u32 c = g.card[i].out ? RGB(200, 210, 230) : RGB(255, 255, 255);
+        text(46, (float)y, s, 0.58f, c, 1);
+        text(112, (float)y, how, 0.58f, g.card[i].out ? RGB(236, 120, 120) : RGB(120, 220, 140), 1);
+        p = puti(s, g.card[i].runs), p = put(p, " ("), p = puti(p, g.card[i].balls), put(p, ")");
+        text(250 - text_w(s, 0.58f), (float)y, s, 0.58f, c, 1);
+        p = puti(s, g.card[i].fours), p = put(p, "x4  "), p = puti(p, g.card[i].sixes), put(p, "x6");
+        text(262, (float)y, s, 0.52f, RGB(170, 186, 220), 1);
+        y += 18, ++shown;
+    }
+    if (g.next_in <= WICKETS) { /* did not bat */
+        p = put(s, "Did not bat:");
+        for (int i = g.next_in; i <= WICKETS && p - s < 50; ++i) p = put(p, " #"), p = puti(p, g.lineup[i].num);
+        text_c(CX, (float)y + 2, s, 0.52f, RGB(170, 186, 220), 1);
+        y += 18;
+    }
+    p = put(s, "Best stand "), p = puti(p, g.best_stand), p = put(p, ": #"), p = puti(p, g.lineup[g.best_a].num),
+    p = put(p, " & #"), puti(p, g.lineup[g.best_b].num);
+    text_c(CX, (float)y + 4, s, 0.58f, RGB(255, 214, 64), 1);
+    text_c(CX, 292, "Centre: menu", 0.6f, RGB(255, 255, 255), 1);
+    (void)shown;
+}
+
 static void end_screen(void) {
+    if (g.page) {
+        card_screen();
+        return;
+    }
     char s[48], *p;
     float a = sat(g.t * 3);
     for (int i = 0; i < W * H; ++i) cv[i] = mixp(cv[i], RGB(4, 6, 16), (u32)(110 * a));
@@ -1044,7 +1114,7 @@ static void end_screen(void) {
     text_c(CX, 140, s, 0.9f, RGB(230, 236, 250), a);
     p = puti(s, g.runs), p = put(p, "/"), p = puti(p, g.wkts), p = put(p, " chasing "), puti(p, g.target);
     text_c(CX, 166, s, 0.8f, RGB(170, 186, 220), a);
-    text_c(CX, 198, "Centre: menu", 0.8f, RGB(255, 255, 255), a);
+    text_c(CX, 198, "Centre: scorecard", 0.8f, RGB(255, 255, 255), a);
 }
 
 static void render(void) {
@@ -1076,7 +1146,10 @@ static void choose(void) {
         if (g.sel == 0) g.state = g.paused_from;
         else g.state = S_MENU, g.sel = 1;
     } else if (g.state == S_END) {
-        if (g.t > 0.6f) g.state = S_MENU, g.sel = 1;
+        if (g.t > 0.6f) {
+            if (!g.page) g.page = 1;
+            else g.state = S_MENU, g.sel = 1;
+        }
     } else swing();
 }
 
@@ -1156,10 +1229,10 @@ int main(int argc, char **argv) {
     char path[256];
     render();
     snprintf(path, sizeof path, "%s/menu.bmp", dir), bmp(path);
-    input("w -40"), input("w 40"); /* back to 2 Overs */
+    input("w -40"); /* 5 Overs */
     input("k d 218");
     int aimed_ball = -1;
-    for (int f = 0; f < 60 * 70 && g.state != S_END; ++f) {
+    for (int f = 0; f < 60 * 300 && g.state != S_END; ++f) {
         if (g.state == S_BALL && aimed_ball != g.balls) {
             float X, Y, d;
             delivery_at(g.t, &X, &Y, &d);
@@ -1173,6 +1246,8 @@ int main(int argc, char **argv) {
     }
     step(1), render();
     snprintf(path, sizeof path, "%s/end.bmp", dir), bmp(path);
+    g.page = 1, render();
+    snprintf(path, sizeof path, "%s/card.bmp", dir), bmp(path);
     printf("%d frames, %d/%d chasing %d\n", frame, g.runs, g.wkts, g.target);
     return 0;
 }
@@ -1273,7 +1348,7 @@ int main(int argc, char **argv) {
         var[5] = back;
         sc(SYS_ioctl, fb, FBIOPAN_DISPLAY, (long)var, 0, 0, 0);
         back = back ? 0 : W;
-        next = t + 16;
+        next = t + (g.state == S_BALL || g.state == S_HIT ? 16 : 33); /* 60 a second while the ball is live, else 30 */
     }
     if (var[5] != y0) var[5] = y0, sc(SYS_ioctl, fb, FBIOPAN_DISPLAY, (long)var, 0, 0, 0);
     sc(SYS_unlink, (long)INPUT_SOCK, 0, 0, 0, 0, 0);
