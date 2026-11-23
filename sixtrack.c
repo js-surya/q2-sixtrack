@@ -863,7 +863,7 @@ static void ball(void) {
     float sx, sy, gx, gy;
     proj(g.bx, g.by, g.bd, &sx, &sy);
     proj(g.bx, 0, g.bd, &gx, &gy);
-    float r = maxf(1.6f, 0.11f * scale_at(g.bd));
+    float r = maxf(3.2f, 0.21f * scale_at(g.bd)); /* drawn large: a real ball would be a pixel or two */
     ellipse(gx, gy, r * 1.2f, r * 0.45f, RGB(0, 0, 0), 0.3f); /* shadow */
     if (g.state == S_BALL) { /* a short trail */
         for (int i = 1; i <= 4; ++i) {
