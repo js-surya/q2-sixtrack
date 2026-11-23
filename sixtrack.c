@@ -273,10 +273,27 @@ static struct {
     float bail_t;
     fielder f[FIELDERS];
     int bg_over; /* the over the background's strip was drawn for */
+    struct { int num, left; } lineup[WICKETS + 1]; /* the batting order: shirt numbers, left-handers */
     float wheel;
 } g;
 
 static float deg(float a) { return a * (PI / 180); }
+
+/* The batter in: +1 a right-hander, -1 a left-hander, whose stance, shots and field are mirrored */
+static int batter_in(void) { return g.wkts < WICKETS ? g.wkts : WICKETS; }
+static float hand(void) { return g.lineup[batter_in()].left ? -1.0f : 1.0f; }
+
+/* Eleven batters, shuffled: numbers 1 to 99, none twice; about a third left-handed */
+static void pick_lineup(void) {
+    for (int i = 0; i <= WICKETS; ++i) {
+        int n, dup;
+        do {
+            n = 1 + (int)(rnd() % 99), dup = 0;
+            for (int j = 0; j < i; ++j) dup |= g.lineup[j].num == n;
+        } while (dup);
+        g.lineup[i].num = n, g.lineup[i].left = frand() < 0.33f;
+    }
+}
 
 /* The green band's six window narrows each over; from over 3 slower balls and other lengths mix in. */
 static int over_now(void) { return g.balls / 6; }
@@ -284,7 +301,7 @@ static float six_half_for(int over) { return maxf(0.30f - 0.035f * (float)over, 
 
 static void place_fielders(void) {
     for (int i = 0; i < FIELDERS; ++i) {
-        float a = deg(field_pos[i][0]), r = field_pos[i][1];
+        float a = deg(field_pos[i][0] * hand()), r = field_pos[i][1]; /* the field mirrored for a left-hander */
         g.f[i].hx = g.f[i].x = g.f[i].tx = -fsin(a) * r;
         g.f[i].hd = g.f[i].d = g.f[i].td = fcos(a) * r;
         g.f[i].caught = 0;
@@ -304,7 +321,7 @@ static void pick_delivery(void) {
     float p = (float)g.balls / (float)(g.overs * 6); /* how far through the match */
     g.spin = frand() < mixf(0.06f, 0.28f, p);
     float v, bounce_d, e, Xt = spread() * 0.2f; /* Xt: where it would cross the stumps' line */
-    g.X0 = 0.3f + spread() * 0.15f, g.Y0 = 2.1f + spread() * 0.12f, g.G = GAME_G;
+    g.X0 = 0.3f * hand() + spread() * 0.15f, g.Y0 = 2.1f + spread() * 0.12f, g.G = GAME_G;
     if (g.spin) {
         v = 5.4f + frand() * 1.6f;
         bounce_d = 3 + frand() * 5;
@@ -337,7 +354,7 @@ static void describe(char *s) {
     float b = g.bounce_d;
     p = put(p, b < STUMPS_D ? "full toss" : b < 1.5f ? "yorker" : b < 4.5f ? "full" : b < 9 ? "good length"
                                                                     : b < 12 ? "short" : "bouncer");
-    float side = g.spin ? g.turn : g.ax;
+    float side = (g.spin ? g.turn : g.ax) * hand(); /* away from the bat: to the off side */
     if (absf(side) > (g.spin ? 0.15f : 0.12f))
         put(p, g.spin ? (side > 0 ? ", turning away" : ", turning in") : (side > 0 ? ", swinging away" : ", swinging in"));
 }
@@ -356,6 +373,7 @@ static void new_ball(void) {
 
 static void start_match(int overs) {
     g.overs = overs, g.runs = g.wkts = g.balls = 0;
+    pick_lineup();
     int balls = overs * 6;
     g.target = balls + (int)((float)balls * (0.45f + frand() * 0.4f)) + 1; /* about 1.5 to 1.9 a ball */
     g.banner_t = 0;
@@ -399,17 +417,17 @@ static void swing(void) {
         g.edge_side = d < BAND0 - 5 * BAND_W;
         if (frand() < 0.5f) {
             g.how = H_BEHIND, g.got = 0;
-            g.ang = g.edge_side ? -160 : 160, g.R = 18, g.ymax = 1.5f, g.dur = 0.55f;
+            g.ang = (g.edge_side ? -160 : 160) * hand(), g.R = 18, g.ymax = 1.5f, g.dur = 0.55f;
         } else {
             g.how = H_RUNS, g.got = 1;
-            g.ang = g.edge_side ? -150 : 150, g.R = 22, g.ymax = 0.6f, g.dur = 0.8f;
+            g.ang = (g.edge_side ? -150 : 150) * hand(), g.R = 22, g.ymax = 0.6f, g.dur = 0.8f;
         }
     } else {
         int b = (int)((BAND0 - d) / BAND_W);
         if (b > 4) b = 4;
         float centre = BAND0 - BAND_W * ((float)b + 0.5f), off = absf(d - centre);
         g.band = b, g.how = H_RUNS;
-        g.ang = band_ang[b] + (frand() - 0.5f) * 18;
+        g.ang = band_ang[b] * hand() + (frand() - 0.5f) * 18;
         if (off < g.six_half) g.got = 6, g.R = 80, g.ymax = 22, g.dur = 1.7f;
         else if (off < 0.38f) g.got = 4, g.R = 64, g.ymax = 1.2f, g.dur = 1.35f;
         else if (off < 0.56f) g.got = 2, g.R = 40, g.ymax = 7, g.dur = 1.15f;
@@ -418,16 +436,16 @@ static void swing(void) {
         if (frand() < catch_p) { /* to the nearest fielder: caught in the deep */
             float best = 1e9f;
             for (int i = 0; i < FIELDERS; ++i) {
-                float da = absf(field_pos[i][0] - g.ang);
+                float da = absf(field_pos[i][0] * hand() - g.ang);
                 if (da < best) best = da, g.catcher = i;
             }
             g.how = H_DEEP, g.got = 0;
             g.R = field_pos[g.catcher][1], g.ymax = 11, g.dur = 1.4f;
-            g.ang = field_pos[g.catcher][0];
+            g.ang = field_pos[g.catcher][0] * hand();
         }
     }
     g.state = S_HIT, g.t = 0;
-    g.bx = BAT_X - 0.2f, g.by = 0.8f, g.bd = 0.4f;
+    g.bx = (BAT_X - 0.2f) * hand(), g.by = 0.8f, g.bd = 0.4f;
     if (g.how == H_RUNS && g.got != 6) { /* the nearest fielder chases it */
         float a = deg(g.ang), lx = -fsin(a) * g.R, ld = fcos(a) * g.R, best = 1e9f;
         int k = 0;
@@ -445,7 +463,16 @@ static void end_ball(void) {
     else g.wkts++;
     if (g.runs >= g.target) g.state = S_END, g.won = 1, g.t = 0;
     else if (g.wkts >= WICKETS || g.balls >= g.overs * 6) g.state = S_END, g.won = 0, g.t = 0;
-    else new_ball();
+    else {
+        int out = g.how != H_RUNS;
+        new_ball();
+        if (out) { /* the next batter in */
+            char s[32], *p = put(s, "New batter #");
+            p = puti(p, g.lineup[batter_in()].num);
+            put(p, g.lineup[batter_in()].left ? ", left-handed" : ", right-handed");
+            banner(s, RGB(255, 255, 255));
+        }
+    }
 }
 
 static void step(float dt) {
@@ -476,7 +503,7 @@ static void step(float dt) {
     if (g.dur > 0) {
         float u = sat(g.t / g.dur), e = g.ymax > 3 ? u : 1 - (1 - u) * (1 - u), a = deg(g.ang);
         float r = g.R * e;
-        g.bx = BAT_X - 0.2f - fsin(a) * r, g.bd = 0.4f + fcos(a) * r;
+        g.bx = (BAT_X - 0.2f) * hand() - fsin(a) * r, g.bd = 0.4f + fcos(a) * r;
         g.by = 0.8f * (1 - u) + 4 * g.ymax * u * (1 - u);
         if (u >= 1 && g.how == H_DEEP && g.catcher >= 0) g.f[g.catcher].caught = 1;
     }
@@ -711,6 +738,7 @@ static float ease(float t) { t = sat(t); return t * t * (3 - 2 * t); }
 static v3 bat_anchor; /* the figure's feet: what it is scaled up about */
 #define BAT_BOOST 1.95f
 static void bp(v3 p, float *sx, float *sy) {
+    p.x *= hand(); /* a left-hander: the same figure, mirrored */
     v3 q = V(bat_anchor.x + (p.x - bat_anchor.x) * BAT_BOOST, (p.y) * BAT_BOOST,
              bat_anchor.d + (p.d - bat_anchor.d) * BAT_BOOST);
     proj(q.x, q.y, q.d, sx, sy);
@@ -785,7 +813,7 @@ static pose batter_pose(void) {
 
 static void batter(void) {
     pose p = batter_pose();
-    bat_anchor = V(0.62f, 0, 0.25f);
+    bat_anchor = V(0.62f * hand(), 0, 0.25f);
     const u32 KIT = BATTING.shirt, TROUSER = shade(BATTING.shirt, 0.7f), PAD = RGB(246, 246, 240), GLOVE = RGB(250, 250, 250);
     float c = p.crouch, l = p.lean;
     /* hips and shoulders, side-on: the left (toward the bowler) and the right (toward us) */
@@ -808,6 +836,15 @@ static void batter(void) {
     limb(hip, sh, 0.2f, KIT);
     limb(shL, shR, 0.1f, KIT);
     limb(V(sh.x, sh.y - 0.02f, sh.d - 0.05f), V(hip.x, hip.y + 0.1f, hip.d - 0.05f), 0.03f, BATTING.trim); /* a stripe down the back */
+    { /* the shirt number, across the back */
+        char n[4];
+        puti(n, g.lineup[batter_in()].num);
+        float nx, ny;
+        bp(V(mixf(hip.x, sh.x, 0.55f) + 0.02f, mixf(hip.y, sh.y, 0.55f), mixf(hip.d, sh.d, 0.55f) - 0.12f), &nx, &ny);
+        float k = 0.3f * bk() / FONT_H;
+        text_c(nx + 0.7f, ny - FONT_H * k / 2 + 0.7f, n, k, RGB(10, 20, 60), 0.8f);
+        text_c(nx, ny - FONT_H * k / 2, n, k, BATTING.trim, 1);
+    }
     limb(hipR, kneeB, 0.105f, TROUSER);
     limb(kneeB, p.back, 0.09f, PAD), blob(kneeB, 0.1f, PAD);
     limb(p.back, V(p.back.x - 0.02f, 0.03f, p.back.d + 0.12f), 0.055f, RGB(250, 250, 250));
@@ -930,7 +967,8 @@ static void hud(void) {
     panel((int)CX - 128, 4, 256, 44);
     p = puti(s, g.runs), p = put(p, "/"), p = puti(p, g.wkts);
     text(CX - 118, 5, s, 1, RGB(255, 255, 255), 1);
-    p = put(s, "Ov "), p = puti(p, g.balls / 6), p = put(p, "."), p = puti(p, g.balls % 6), p = put(p, "/"), puti(p, g.overs);
+    p = put(s, "Ov "), p = puti(p, g.balls / 6), p = put(p, "."), p = puti(p, g.balls % 6), p = put(p, "/"), p = puti(p, g.overs);
+    p = put(p, "  #"), p = puti(p, g.lineup[batter_in()].num), put(p, g.lineup[batter_in()].left ? " LHB" : " RHB");
     text(CX - 118, 27, s, 0.7f, RGB(190, 205, 235), 1);
     p = put(s, "Target "), puti(p, g.target);
     text(CX + 118 - text_w(s, 0.9f), 6, s, 0.9f, RGB(255, 214, 64), 1);
@@ -956,6 +994,7 @@ static void result_banner(void) {
             float an = (float)i * (2 * PI / 14) + g.clock, r = 30 + 70 * u;
             disc(CX + fcos(an) * r, 120 + fsin(an) * r * 0.6f, 4 * (1 - u * 0.5f), band_col[i % 5], a);
         }
+    k = minf(k, (W - 24) / maxf(text_w(g.banner, 1), 1)); /* a long one fits the screen */
     if (k > 0.05f) text_shadow(CX, 100 - FONT_H * k / 2, g.banner, k, g.banner_col, a);
 }
 
