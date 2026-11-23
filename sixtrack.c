@@ -91,14 +91,6 @@ static void add_light(int x, int y, u32 c, float a) { /* additive glow */
           b = (float)(p & 255) + (float)(c & 255) * a;
     T[y * W + x] = RGB((u32)minf(r, 255), (u32)minf(g, 255), (u32)minf(b, 255));
 }
-static void rect(int x0, int y0, int x1, int y1, u32 c, float a) {
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > W) x1 = W;
-    if (y1 > H) y1 = H;
-    for (int y = y0; y < y1; ++y)
-        for (int x = x0; x < x1; ++x) plot(x, y, c, a);
-}
 static void bounds(float x0, float y0, float x1, float y1, int *a, int *b, int *c, int *d) {
     *a = (int)maxf(x0, 0), *b = (int)maxf(y0, 0), *c = (int)minf(x1 + 1, W), *d = (int)minf(y1 + 1, H);
 }
@@ -155,6 +147,7 @@ static void rrect(int x, int y, int w, int h, float r, u32 c, float a) {
 /* ---- text: Liberation Sans Bold 20 px (font.h, SIL OFL 1.1), drawn at any size ---- */
 
 #include "font.h"
+#include "stands.h"
 static float text_w(const char *s, float k) {
     int w = 0;
     for (; *s; ++s)
@@ -707,52 +700,13 @@ static void make_bg(int over) {
     T = bg;
     u32 seed = rng;
     rng = 99991;
-    /* sky: evening blue to navy, dithered so the panel shows no bands */
-    for (int y = 0; y < 40; ++y)
+    /* the sky, the floodlights, the roof, the stands and their crowd, the boards and the sightscreen: drawn
+     * artwork (art/gen_stands.py, in stands.h) across the top, down to the field */
+    for (int y = 0; y < STANDS_H; ++y)
         for (int x = 0; x < W; ++x) {
-            float k = (float)y / 40 + (frand() - 0.5f) * 0.03f;
-            bg[y * W + x] = RGB((u32)mixf(10, 34, k), (u32)mixf(16, 52, k), (u32)mixf(42, 98, k));
+            const unsigned char *c = stands_rgb + (y * W + x) * 3;
+            bg[y * W + x] = RGB(c[0], c[1], c[2]);
         }
-    for (int i = 0; i < 30; ++i) disc(frand() * W, frand() * 24, 0.6f, RGB(255, 255, 255), 0.5f + frand() * 0.4f);
-    /* stands: three tiers of coloured seats, a speckled crowd */
-    static const u32 tier[4] = { RGB(30, 156, 160), RGB(236, 120, 40), RGB(204, 52, 140), RGB(236, 196, 48) };
-    for (int y = 34; y < 92; ++y) {
-        int row = (y - 34) / 19;
-        for (int x = 0; x < W; ++x) {
-            int seg = ((x + row * 23) / 47) & 3;
-            u32 c = shade(tier[seg], 0.55f + 0.06f * (float)row + (frand() - 0.5f) * 0.08f);
-            bg[y * W + x] = c;
-        }
-        if ((y - 34) % 19 == 0) for (int x = 0; x < W; ++x) bg[y * W + x] = RGB(20, 22, 34);
-        else if ((y - 34) % 4 == 0) for (int x = 0; x < W; ++x) bg[y * W + x] = shade(bg[y * W + x], 0.8f);
-    }
-    static const u32 crowd[6] = { RGB(250, 230, 200), RGB(210, 160, 120), RGB(120, 80, 60), RGB(255, 255, 255),
-                                 RGB(40, 90, 220), RGB(240, 60, 60) };
-    for (int i = 0; i < 2600; ++i) {
-        int x = (int)(frand() * W), y = 36 + (int)(frand() * 55);
-        if ((y - 34) % 19 == 0) continue;
-        plot(x, y, crowd[rnd() % 6], 0.85f);
-        if (frand() < 0.5f) plot(x, y + 1, crowd[rnd() % 6], 0.7f);
-    }
-    for (int x = 20; x < W; x += 62) rect(x, 35, x + 3, 91, RGB(52, 54, 66), 0.9f); /* aisles */
-    rect(0, 27, W, 35, RGB(22, 24, 36), 1); /* the roof's canopy, its lights under it */
-    rect(0, 34, W, 35, RGB(70, 74, 92), 1);
-    for (int x = 8; x < W; x += 16) disc((float)x, 33, 0.9f, RGB(255, 240, 200), 0.8f);
-    /* a black sightscreen behind the bowler, as for a white ball under lights */
-    rect((int)CX - 27, 47, (int)CX + 27, 92, RGB(14, 14, 18), 1);
-    rect((int)CX - 28, 46, (int)CX + 28, 47, RGB(90, 94, 110), 1);
-    /* the boards */
-    static const u32 led[3] = { RGB(24, 40, 96), RGB(16, 120, 128), RGB(180, 70, 30) };
-    for (int x = 0; x < W; x += 46) rect(x, 91, x + 46, 97, led[(x / 46) % 3], 1);
-    rect(0, 91, W, 92, RGB(160, 180, 230), 0.8f);
-    /* floodlights: towers at the sides, their lamps glowing */
-    for (int s = 0; s < 2; ++s) {
-        float x = s ? 344 : 31;
-        capsule(x, 8, x + (s ? 6 : -6), 90, 1.6f, RGB(60, 64, 80), 1);
-        rrect((int)x - 17, 2, 34, 12, 3, RGB(48, 52, 66), 1);
-        for (int i = 0; i < 4; ++i) disc(x - 11 + 7.3f * (float)i, 8, 2.6f, RGB(255, 248, 220), 1);
-        glow(x, 8, 46, RGB(255, 236, 180), 0.55f);
-    }
     /* the outfield: mowing stripes by distance, a faint grain */
     for (int y = 97; y < H; ++y) {
         float d = ground_d((float)y + 0.5f);
