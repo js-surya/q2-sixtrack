@@ -9,6 +9,10 @@ clang --target=mipsel-linux-gnu -march=mips32r2 -mabi=32 -mfp64 -mnan=2008 -mabs
     -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-math-errno -O2 -Wall -Wextra -Werror \
     -c sixtrack.c -o dist/sixtrack.o
 ld.lld -m elf32ltsmip -static -e __start --gc-sections -s -z noexecstack dist/sixtrack.o -o dist/.sixtrack/q2-sixtrack
-cp q2app dist/.sixtrack/
-(cd dist && zip -qr sixtrack.zip .sixtrack)
-echo dist/sixtrack.zip
+cp q2app LICENSES.txt dist/.sixtrack/
+if command -v zip >/dev/null; then
+    (cd dist && zip -qr sixtrack.zip .sixtrack)
+    echo dist/sixtrack.zip
+else
+    echo dist/.sixtrack "(no zip here: zip it elsewhere)"
+fi
