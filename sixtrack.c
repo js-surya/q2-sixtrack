@@ -1064,8 +1064,17 @@ static void hud(void) {
 }
 
 /* The umpire's signal, close up, as television cuts to him: six, four, out, wide */
+static int umpire_signal(void) { /* the signal shown close up now, or -1 */
+    if (g.state != S_HIT || !g.shown || g.banner_t < 0.25f) return -1;
+    if (g.how == H_RUNS && g.got == 6) return PF_U_SIX;
+    if (g.how == H_RUNS && g.got == 4) return (int)(g.clock * 4) & 1 ? PF_U_FOUR1 : PF_U_FOUR0;
+    if (g.how == H_WIDE) return PF_U_WIDE;
+    if (g.how == H_BOWLED || g.how == H_BEHIND || g.how == H_DEEP) return PF_U_OUT;
+    return -1;
+}
+
 static void umpire_close_up(void) {
-    if (g.state != S_HIT || !g.shown || g.banner_t < 0.25f) return;
+    if (umpire_signal() < 0) return;
     int f;
     if (g.how == H_RUNS && g.got == 6) f = PF_U_SIX;
     else if (g.how == H_RUNS && g.got == 4) f = (int)(g.clock * 4) & 1 ? PF_U_FOUR1 : PF_U_FOUR0;
@@ -1073,13 +1082,14 @@ static void umpire_close_up(void) {
     else if (g.how == H_BOWLED || g.how == H_BEHIND || g.how == H_DEEP) f = PF_U_OUT;
     else return;
     float a = sat((1.6f - g.banner_t) * 6) * sat(g.banner_t * 4);
-    int x = 14, y = 110, w = 96, h = 132;
+    int x = W - 14 - 96, y = 110, w = 96, h = 132; /* on the right: the batter is left of the middle */
     rrect(x, y, w, h, 10, RGB(10, 14, 30), 0.8f * a);
     rrect(x + 3, y + 3, w - 6, h - 26, 8, RGB(60, 140, 60), 0.9f * a);
     if (a > 0.5f) blit_scaled(f, (float)x + w / 2.0f, (float)(y + h - 26), 96);
     text_c((float)x + w / 2.0f, (float)(y + h - 22), "UMPIRE", 0.6f, RGB(230, 236, 250), a);
 }
 
+#define BANNER_Y 150 /* the result's middle: above the batter's helmet, clear of the far end's players */
 static void result_banner(void) {
     if (g.banner_t <= 0) return;
     float u = 1.6f - g.banner_t, pop = u < 0.15f ? u / 0.15f : 1, a = sat(g.banner_t * 2.5f);
@@ -1087,10 +1097,12 @@ static void result_banner(void) {
     if (g.banner[0] == 'S' && g.banner[1] == 'I') /* a burst behind a six */
         for (int i = 0; i < 14; ++i) {
             float an = (float)i * (2 * PI / 14) + g.clock, r = 30 + 70 * u;
-            disc(CX + fcos(an) * r, 120 + fsin(an) * r * 0.6f, 4 * (1 - u * 0.5f), band_col[i % 5], a);
+            disc((W - 116) / 2.0f + 2 + fcos(an) * r, BANNER_Y + fsin(an) * r * 0.5f, 4 * (1 - u * 0.5f), band_col[i % 5], a);
         }
-    k = minf(k, (W - 24) / maxf(text_w(g.banner, 1), 1)); /* a long one fits the screen */
-    if (k > 0.05f) text_shadow(CX, 100 - FONT_H * k / 2, g.banner, k, g.banner_col, a);
+    /* beside the umpire's close-up when it shows (it is on the right), else across the middle */
+    float cx = umpire_signal() >= 0 ? (W - 116) / 2.0f + 2 : CX, room = umpire_signal() >= 0 ? W - 126.0f : W - 24.0f;
+    k = minf(k, room / maxf(text_w(g.banner, 1), 1)); /* a long one fits */
+    if (k > 0.05f) text_shadow(cx, BANNER_Y - FONT_H * k / 2, g.banner, k, g.banner_col, a);
 }
 
 static const char *const menu_rows[4] = { "1 Over", "2 Overs", "5 Overs", "Quit" };
