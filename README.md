@@ -10,6 +10,7 @@ as a card game. Chase a target under the floodlights: time your swing, read the 
 ## How to play
 
 - Pick a match: **1, 2 or 5 overs**, 10 wickets, and chase the target the game sets.
+- **Hard** (under the cards): tighter timing, more edges carried to the keeper and higher targets. Turn the wheel to it and press **Centre**, or tap it, to switch it on or off.
 - Press **Centre** (or tap the screen) to swing. That's the only control.
 - **When** you swing decides everything: the nearer the perfect moment, the better the shot (middled,
   good, mistimed, an edge, or beaten). Early sends it to the leg side, late to the off side.
