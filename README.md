@@ -5,7 +5,7 @@ as a card game. Chase a target under the floodlights: time your swing, read the 
 
 | Menu | Batting | A six | Scorecard |
 |---|---|---|---|
-| ![The menu: 1, 2 or 5 overs](docs/images/menu.png) | ![Batting, a faint guide for the perfect moment](docs/images/batting.png) | ![A six over midwicket, the umpire's signal close up](docs/images/six.png) | ![The batting card after a chase](docs/images/scorecard.png) |
+| ![The menu: 1, 2 or 5 overs, Hard and Quit](docs/images/menu.png) | ![Batting, a faint guide for the perfect moment](docs/images/batting.png) | ![A six over midwicket, the umpire's signal close up](docs/images/six.png) | ![The batting card after a chase](docs/images/scorecard.png) |
 
 ## How to play
 
